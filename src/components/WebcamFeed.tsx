@@ -1,21 +1,38 @@
-import React from 'react';
-import Webcam from 'react-webcam';
+import React, { useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
 
-const videoConstraints = {
-  width: 640,
-  height: 480,
-  facingMode: 'user',
+export type WebcamHandle = {
+  video: HTMLVideoElement;
 };
 
-export const WebcamFeed = React.forwardRef<Webcam, {}>((props, ref) => (
-  <Webcam
-    audio={false}
-    height={480}
-    ref={ref}
-    screenshotFormat="image/jpeg"
-    width={640}
-    videoConstraints={videoConstraints}
-    className="rounded-lg shadow-lg"
-    {...props}
-  />
-));
+export const WebcamFeed = forwardRef<WebcamHandle>((_, ref) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  useImperativeHandle(ref, () => ({
+    video: videoRef.current!,
+  }));
+
+  useEffect(() => {
+    const startCamera = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+        }
+      } catch (err) {
+        console.error('Camera access error:', err);
+      }
+    };
+    startCamera();
+  }, []);
+
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      muted
+      playsInline
+      className="w-full h-auto object-cover"
+      style={{ position: 'absolute', top: 0, left: 0 }}
+    />
+  );
+});

@@ -6,7 +6,8 @@ import { WebcamFeed } from './WebcamFeed';
 import {
   getShoulderWidth,
   getTorsoLength,
-  getPixelHeight
+  getPixelHeight,
+  convertPxToCm
 } from '../utils/measurements';
 
 export const PoseDetector: React.FC = () => {
@@ -15,34 +16,33 @@ export const PoseDetector: React.FC = () => {
 
   useEffect(() => {
     const run = async () => {
-      // 1️⃣ Initialize WebGL backend
       await tf.setBackend('webgl');
       await tf.ready();
+      console.log('✅ TensorFlow ready');
 
-      // 2️⃣ Create MoveNet detector
       const detector = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
         { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
       );
+      console.log('✅ Pose detector created');
 
-      // 3️⃣ Draw loop
       const drawLoop = async () => {
         const video = webcamRef.current?.video as HTMLVideoElement;
         const canvas = canvasRef.current;
         if (video?.readyState === 4 && canvas) {
-          // Match canvas to video size
           canvas.width = video.videoWidth;
           canvas.height = video.videoHeight;
           const ctx = canvas.getContext('2d');
           if (ctx) {
-            // 4️⃣ Estimate poses
             const poses = await detector.estimatePoses(video);
+            console.log('📸 Poses:', poses);
+
             ctx.clearRect(0, 0, canvas.width, canvas.height);
 
             if (poses.length > 0) {
               const keypoints = poses[0].keypoints;
 
-              // — Draw skeleton lines —
+              // Draw skeleton
               const adjacentPairs = poseDetection.util.getAdjacentPairs(
                 poseDetection.SupportedModels.MoveNet
               );
@@ -59,7 +59,7 @@ export const PoseDetector: React.FC = () => {
                 }
               });
 
-              // — Draw keypoints —
+              // Draw keypoints
               keypoints.forEach((kp) => {
                 if (kp.score! > 0.3) {
                   ctx.beginPath();
@@ -69,24 +69,35 @@ export const PoseDetector: React.FC = () => {
                 }
               });
 
-              // — Compute & display measurements —
+              // Measurements
               const shoulderPx = getShoulderWidth(keypoints);
-              const torsoPx    = getTorsoLength(keypoints);
-              const heightPx   = getPixelHeight(keypoints);
+              const torsoPx = getTorsoLength(keypoints);
+              const heightPx = getPixelHeight(keypoints);
+              const fovDegrees = 60;
+
+              const shoulderCm = shoulderPx ? convertPxToCm(shoulderPx, fovDegrees, canvas.width) : null;
+              const torsoCm = torsoPx ? convertPxToCm(torsoPx, fovDegrees, canvas.width) : null;
+              const heightCm = heightPx ? convertPxToCm(heightPx, fovDegrees, canvas.width) : null;
+
+              const shoulderIn = shoulderCm ? shoulderCm / 2.54 : null;
+              const torsoIn = torsoCm ? torsoCm / 2.54 : null;
+              const heightIn = heightCm ? heightCm / 2.54 : null;
 
               ctx.fillStyle = 'white';
               ctx.font = '16px sans-serif';
               let offsetY = 20;
-              if (shoulderPx !== null) {
-                ctx.fillText(`Shoulder: ${shoulderPx.toFixed(0)}px`, 10, offsetY);
+
+              // Show all 3 units always if values exist
+              if (shoulderPx !== null && shoulderCm !== null && shoulderIn !== null) {
+                ctx.fillText(`Shoulder: ${shoulderPx.toFixed(0)} px | ${shoulderCm.toFixed(1)} cm | ${shoulderIn.toFixed(1)} in`, 10, offsetY);
                 offsetY += 20;
               }
-              if (torsoPx !== null) {
-                ctx.fillText(`Torso: ${torsoPx.toFixed(0)}px`, 10, offsetY);
+              if (torsoPx !== null && torsoCm !== null && torsoIn !== null) {
+                ctx.fillText(`Torso: ${torsoPx.toFixed(0)} px | ${torsoCm.toFixed(1)} cm | ${torsoIn.toFixed(1)} in`, 10, offsetY);
                 offsetY += 20;
               }
-              if (heightPx !== null) {
-                ctx.fillText(`Height: ${heightPx.toFixed(0)}px`, 10, offsetY);
+              if (heightPx !== null && heightCm !== null && heightIn !== null) {
+                ctx.fillText(`Height: ${heightPx.toFixed(0)} px | ${heightCm.toFixed(1)} cm | ${heightIn.toFixed(1)} in`, 10, offsetY);
               }
             }
           }
@@ -101,12 +112,11 @@ export const PoseDetector: React.FC = () => {
   }, []);
 
   return (
-    <div className="relative inline-block">
-      <WebcamFeed ref={webcamRef} />
-      <canvas
-        ref={canvasRef}
-        className="absolute top-0 left-0 pointer-events-none"
-      />
+    <div className="pose-wrapper">
+      <div className="video-container">
+        <WebcamFeed ref={webcamRef} />
+        <canvas ref={canvasRef} className="pose-canvas" />
+      </div>
     </div>
   );
 };
