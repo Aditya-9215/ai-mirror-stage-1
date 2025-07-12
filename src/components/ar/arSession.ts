@@ -12,7 +12,10 @@ export async function startARSession(): Promise<boolean> {
           optionalFeatures: ['dom-overlay'],
           domOverlay: { root: document.body },
         });
-        console.log('✅ AR session started');
+
+        // ✅ Use the session variable to prevent lint error
+        console.log('✅ AR session started:', session);
+
         return true;
       } catch (e) {
         console.error('❌ Failed to start WebXR session with depth sensing:', e);
