@@ -31,8 +31,14 @@ export const PoseDetector: React.FC = () => {
         const video = webcamRef.current?.video as HTMLVideoElement;
         const canvas = canvasRef.current;
         if (video?.readyState === 4 && canvas) {
-          canvas.width = video.videoWidth;
-          canvas.height = video.videoHeight;
+          const videoWidth = video.videoWidth;
+          const videoHeight = video.videoHeight;
+
+          video.width = videoWidth;
+          video.height = videoHeight;
+          canvas.width = videoWidth;
+          canvas.height = videoHeight;
+
           const ctx = canvas.getContext('2d');
           if (ctx) {
             const poses = await detector.estimatePoses(video);
@@ -81,30 +87,30 @@ export const PoseDetector: React.FC = () => {
 
               ctx.fillStyle = 'white';
               ctx.font = '16px sans-serif';
-              let offsetY = 20;
+              let offsetY = 30;
 
               if (shoulderCm !== null && shoulderPx !== null) {
                 ctx.fillText(
                   `Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(shoulderCm).toFixed(1)} in / ${shoulderPx.toFixed(0)} px`,
-                  10,
+                  12,
                   offsetY
                 );
-                offsetY += 20;
+                offsetY += 24;
               }
 
               if (torsoCm !== null && torsoPx !== null) {
                 ctx.fillText(
                   `Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(torsoCm).toFixed(1)} in / ${torsoPx.toFixed(0)} px`,
-                  10,
+                  12,
                   offsetY
                 );
-                offsetY += 20;
+                offsetY += 24;
               }
 
               if (heightCm !== null && heightPx !== null) {
                 ctx.fillText(
                   `Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(heightCm).toFixed(1)} in / ${heightPx.toFixed(0)} px`,
-                  10,
+                  12,
                   offsetY
                 );
               }
