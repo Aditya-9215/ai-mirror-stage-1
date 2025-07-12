@@ -1,44 +1,37 @@
-import { Keypoint } from '@tensorflow-models/pose-detection';
+export function convertPxToCm(pixels: number, fovDegrees: number, screenWidthPx: number): number {
+  const fovRadians = (fovDegrees * Math.PI) / 180;
+  const distanceToCamera = 65; // Adjusted from 50 to 35 for more realistic results
+  const widthCm = 2 * distanceToCamera * Math.tan(fovRadians / 2);
+  const cmPerPixel = widthCm / screenWidthPx;
+  const result = pixels * cmPerPixel;
 
-export function distance(a: Keypoint, b: Keypoint): number {
-  return Math.hypot(a.x - b.x, a.y - b.y);
+  console.log(`🧮 ${pixels}px ≈ ${result.toFixed(2)} cm (at ${distanceToCamera}cm, FOV: ${fovDegrees}°, width: ${screenWidthPx}px)`);
+
+  return result;
 }
 
-export function getShoulderWidth(keypoints: Keypoint[]): number | null {
-  const left = keypoints.find(k => k.name === 'left_shoulder');
-  const right = keypoints.find(k => k.name === 'right_shoulder');
-  if (left && right && left.score! > 0.3 && right.score! > 0.3) {
-    return distance(left, right);
-  }
-  return null;
+export function convertCmToInch(cm: number): number {
+  return cm / 2.54;
 }
 
-export function getTorsoLength(keypoints: Keypoint[]): number | null {
-  const shoulder = keypoints.find(k => k.name === 'left_shoulder');
-  const hip = keypoints.find(k => k.name === 'left_hip');
-  if (shoulder && hip && shoulder.score! > 0.3 && hip.score! > 0.3) {
-    return distance(shoulder, hip);
-  }
-  return null;
+export function distance(a: any, b: any): number {
+  return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2));
 }
 
-export function getPixelHeight(keypoints: Keypoint[]): number | null {
-  const nose = keypoints.find(k => k.name === 'nose');
-  const leftAnkle = keypoints.find(k => k.name === 'left_ankle');
-  const rightAnkle = keypoints.find(k => k.name === 'right_ankle');
-  if (nose && leftAnkle && rightAnkle &&
-      nose.score! > 0.3 && leftAnkle.score! > 0.3 && rightAnkle.score! > 0.3) {
-    const avgAnkleY = (leftAnkle.y + rightAnkle.y) / 2;
-    return Math.abs(avgAnkleY - nose.y);
-  }
-  return null;
+export function getShoulderWidth(keypoints: any[]): number | null {
+  const left = keypoints.find((kp) => kp.name === 'left_shoulder');
+  const right = keypoints.find((kp) => kp.name === 'right_shoulder');
+  return left && right ? distance(left, right) : null;
 }
 
-// Convert pixels to cm using horizontal field-of-view approximation
-export function convertPxToCm(pixels: number, fovDeg: number, frameWidth: number): number {
-  const fovRad = (fovDeg * Math.PI) / 180;
-  const distanceCm = 50; // assume user is 50cm from camera
-  const viewWidthCm = 2 * distanceCm * Math.tan(fovRad / 2);
-  const pxPerCm = frameWidth / viewWidthCm;
-  return pixels / pxPerCm;
+export function getTorsoLength(keypoints: any[]): number | null {
+  const shoulder = keypoints.find((kp) => kp.name === 'left_shoulder');
+  const hip = keypoints.find((kp) => kp.name === 'left_hip');
+  return shoulder && hip ? distance(shoulder, hip) : null;
+}
+
+export function getPixelHeight(keypoints: any[]): number | null {
+  const top = keypoints.find((kp) => kp.name === 'nose');
+  const bottom = keypoints.find((kp) => kp.name === 'left_ankle' || kp.name === 'right_ankle');
+  return top && bottom ? distance(top, bottom) : null;
 }

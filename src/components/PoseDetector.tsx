@@ -7,7 +7,8 @@ import {
   getShoulderWidth,
   getTorsoLength,
   getPixelHeight,
-  convertPxToCm
+  convertPxToCm,
+  convertCmToInch
 } from '../utils/measurements';
 
 export const PoseDetector: React.FC = () => {
@@ -74,30 +75,38 @@ export const PoseDetector: React.FC = () => {
               const torsoPx = getTorsoLength(keypoints);
               const heightPx = getPixelHeight(keypoints);
               const fovDegrees = 60;
-
               const shoulderCm = shoulderPx ? convertPxToCm(shoulderPx, fovDegrees, canvas.width) : null;
               const torsoCm = torsoPx ? convertPxToCm(torsoPx, fovDegrees, canvas.width) : null;
               const heightCm = heightPx ? convertPxToCm(heightPx, fovDegrees, canvas.width) : null;
-
-              const shoulderIn = shoulderCm ? shoulderCm / 2.54 : null;
-              const torsoIn = torsoCm ? torsoCm / 2.54 : null;
-              const heightIn = heightCm ? heightCm / 2.54 : null;
 
               ctx.fillStyle = 'white';
               ctx.font = '16px sans-serif';
               let offsetY = 20;
 
-              // Show all 3 units always if values exist
-              if (shoulderPx !== null && shoulderCm !== null && shoulderIn !== null) {
-                ctx.fillText(`Shoulder: ${shoulderPx.toFixed(0)} px | ${shoulderCm.toFixed(1)} cm | ${shoulderIn.toFixed(1)} in`, 10, offsetY);
+              if (shoulderCm !== null && shoulderPx !== null) {
+                ctx.fillText(
+                  `Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(shoulderCm).toFixed(1)} in / ${shoulderPx.toFixed(0)} px`,
+                  10,
+                  offsetY
+                );
                 offsetY += 20;
               }
-              if (torsoPx !== null && torsoCm !== null && torsoIn !== null) {
-                ctx.fillText(`Torso: ${torsoPx.toFixed(0)} px | ${torsoCm.toFixed(1)} cm | ${torsoIn.toFixed(1)} in`, 10, offsetY);
+
+              if (torsoCm !== null && torsoPx !== null) {
+                ctx.fillText(
+                  `Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(torsoCm).toFixed(1)} in / ${torsoPx.toFixed(0)} px`,
+                  10,
+                  offsetY
+                );
                 offsetY += 20;
               }
-              if (heightPx !== null && heightCm !== null && heightIn !== null) {
-                ctx.fillText(`Height: ${heightPx.toFixed(0)} px | ${heightCm.toFixed(1)} cm | ${heightIn.toFixed(1)} in`, 10, offsetY);
+
+              if (heightCm !== null && heightPx !== null) {
+                ctx.fillText(
+                  `Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(heightCm).toFixed(1)} in / ${heightPx.toFixed(0)} px`,
+                  10,
+                  offsetY
+                );
               }
             }
           }
