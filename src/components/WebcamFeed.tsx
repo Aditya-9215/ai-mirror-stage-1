@@ -1,38 +1,30 @@
-import React, { useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
+import React, { useEffect, forwardRef } from 'react';
 
-export type WebcamHandle = {
-  video: HTMLVideoElement;
-};
-
-export const WebcamFeed = forwardRef<WebcamHandle>((_, ref) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  useImperativeHandle(ref, () => ({
-    video: videoRef.current!,
-  }));
-
+export const WebcamFeed = forwardRef<HTMLVideoElement>((props, ref) => {
   useEffect(() => {
-    const startCamera = async () => {
+    const start = async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user' },
+          audio: false,
+        });
+        if (ref && 'current' in ref && ref.current) {
+          ref.current.srcObject = stream;
         }
-      } catch (err) {
-        console.error('Camera access error:', err);
+      } catch (e) {
+        console.error('Webcam error', e);
       }
     };
-    startCamera();
-  }, []);
+    start();
+  }, [ref]);
 
   return (
     <video
-      ref={videoRef}
+      ref={ref}
       autoPlay
-      muted
       playsInline
-      className="w-full h-auto object-cover"
-      style={{ position: 'absolute', top: 0, left: 0 }}
+      muted
+      className="webcam-video"
     />
   );
 });

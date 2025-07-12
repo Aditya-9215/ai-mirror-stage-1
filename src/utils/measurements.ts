@@ -1,37 +1,40 @@
-export function convertPxToCm(pixels: number, fovDegrees: number, screenWidthPx: number): number {
-  const fovRadians = (fovDegrees * Math.PI) / 180;
-  const distanceToCamera = 65; // Adjusted from 50 to 35 for more realistic results
-  const widthCm = 2 * distanceToCamera * Math.tan(fovRadians / 2);
-  const cmPerPixel = widthCm / screenWidthPx;
-  const result = pixels * cmPerPixel;
+export function distance(p1: any, p2: any): number {
+  return Math.hypot(p1.x - p2.x, p1.y - p2.y);
+}
 
-  console.log(`🧮 ${pixels}px ≈ ${result.toFixed(2)} cm (at ${distanceToCamera}cm, FOV: ${fovDegrees}°, width: ${screenWidthPx}px)`);
+export function getShoulderWidth(keypoints: any[]): number | null {
+  const left = keypoints.find((k) => k.name === 'left_shoulder');
+  const right = keypoints.find((k) => k.name === 'right_shoulder');
+  if (left?.score! > 0.3 && right?.score! > 0.3) return distance(left, right);
+  return null;
+}
 
-  return result;
+export function getTorsoLength(keypoints: any[]): number | null {
+  const sh = keypoints.find((k) => k.name === 'left_shoulder');
+  const hip = keypoints.find((k) => k.name === 'left_hip');
+  if (sh?.score! > 0.3 && hip?.score! > 0.3) return distance(sh, hip);
+  return null;
+}
+
+export function getPixelHeight(keypoints: any[]): number | null {
+  const top = keypoints.find((k) => k.name === 'nose');
+  const bot = keypoints.find((k) => k.name === 'left_ankle');
+  if (top?.score! > 0.3 && bot?.score! > 0.3) return distance(top, bot);
+  return null;
+}
+
+export function convertPxToCm(
+  px: number,
+  fovDeg: number,
+  screenWidthPx: number
+): number {
+  const fov = (fovDeg * Math.PI) / 180;
+  const distCm = 65; // assume 65cm
+  const widthCm = 2 * distCm * Math.tan(fov / 2);
+  const cmPerPx = widthCm / screenWidthPx;
+  return px * cmPerPx;
 }
 
 export function convertCmToInch(cm: number): number {
   return cm / 2.54;
-}
-
-export function distance(a: any, b: any): number {
-  return Math.sqrt(Math.pow(a.x - b.x, 2) + Math.pow(a.y - b.y, 2));
-}
-
-export function getShoulderWidth(keypoints: any[]): number | null {
-  const left = keypoints.find((kp) => kp.name === 'left_shoulder');
-  const right = keypoints.find((kp) => kp.name === 'right_shoulder');
-  return left && right ? distance(left, right) : null;
-}
-
-export function getTorsoLength(keypoints: any[]): number | null {
-  const shoulder = keypoints.find((kp) => kp.name === 'left_shoulder');
-  const hip = keypoints.find((kp) => kp.name === 'left_hip');
-  return shoulder && hip ? distance(shoulder, hip) : null;
-}
-
-export function getPixelHeight(keypoints: any[]): number | null {
-  const top = keypoints.find((kp) => kp.name === 'nose');
-  const bottom = keypoints.find((kp) => kp.name === 'left_ankle' || kp.name === 'right_ankle');
-  return top && bottom ? distance(top, bottom) : null;
 }
