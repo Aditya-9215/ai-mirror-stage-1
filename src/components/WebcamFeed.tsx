@@ -1,56 +1,54 @@
-// src/components/WebcamFeed.tsx
-import React, {
-  forwardRef,
-  useImperativeHandle,
-  useRef,
-  useEffect,
-  useState,
-} from 'react';
+import React, { useEffect, useRef, useImperativeHandle, forwardRef } from 'react';
 
 export interface WebcamHandle {
-  video: HTMLVideoElement;
+  video: HTMLVideoElement | null;
   isMirrored: boolean;
 }
 
-export const WebcamFeed = forwardRef<WebcamHandle>((_, ref) => {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [isMirrored, setMirrored] = useState(true);
+interface WebcamFeedProps {
+  facingMode?: 'user' | 'environment';
+}
 
-  useImperativeHandle(ref, () => ({
-    video: videoRef.current!,
-    isMirrored,
-  }));
+export const WebcamFeed = forwardRef<WebcamHandle, WebcamFeedProps>(({ facingMode = 'user' }, ref) => {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
 
   useEffect(() => {
-    async function startCamera() {
+    const initWebcam = async () => {
       try {
-        const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
-        const facingMode = isMobile ? 'environment' : 'user';
-        setMirrored(facingMode === 'user');
-
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode },
+          video: {
+            facingMode: { ideal: facingMode },
+            width: { ideal: 640 },
+            height: { ideal: 480 }
+          },
+          audio: false
         });
+
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
-          await videoRef.current.play();
+          videoRef.current.onloadedmetadata = () => {
+            videoRef.current?.play();
+          };
         }
       } catch (err) {
         console.error('❌ getUserMedia error:', err);
       }
-    }
-    startCamera();
-  }, []);
+    };
+
+    initWebcam();
+  }, [facingMode]);
+
+  useImperativeHandle(ref, () => ({
+    video: videoRef.current,
+    isMirrored: facingMode === 'user'
+  }));
 
   return (
     <video
       ref={videoRef}
       style={{
-        display: 'block',
-        width: '100%',
-        height: '100%',
-        objectFit: 'cover',
-        transform: isMirrored ? 'scaleX(-1)' : 'none',
+        transform: facingMode === 'user' ? 'scaleX(-1)' : 'none',
+        borderRadius: '8px'
       }}
       muted
       playsInline

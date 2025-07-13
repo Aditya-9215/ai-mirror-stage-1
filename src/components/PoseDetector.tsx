@@ -1,5 +1,4 @@
-// src/components/PoseDetector.tsx
-import React, { useRef, useEffect } from 'react';
+import React, { useEffect, useRef } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import '@tensorflow/tfjs-backend-webgl';
 import * as poseDetection from '@tensorflow-models/pose-detection';
@@ -14,128 +13,151 @@ import {
 } from '../utils/measurements';
 import { getLatestDepthInfo } from './ar/arSession';
 
-export const PoseDetector: React.FC = () => {
+interface PoseDetectorProps {
+  facingMode?: 'user' | 'environment';
+}
+
+export const PoseDetector: React.FC<PoseDetectorProps> = ({ facingMode = 'user' }) => {
   const webcamRef = useRef<WebcamHandle>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
     let detector: poseDetection.PoseDetector;
 
-    async function init() {
+    const run = async () => {
       await tf.setBackend('webgl');
       await tf.ready();
+      console.log('✅ TensorFlow ready');
+
       detector = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
-        { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+        {
+          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
+        }
       );
-      requestAnimationFrame(renderFrame);
-    }
+      console.log('✅ Pose detector created');
 
-    async function renderFrame() {
-      const handle = webcamRef.current;
-      const videoEl = handle?.video;
-      const mirror = handle?.isMirrored;
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext('2d');
-      if (!videoEl || !canvas || !ctx || !detector) {
-        requestAnimationFrame(renderFrame);
-        return;
-      }
+      const detect = async () => {
+        const handle = webcamRef.current;
+        const videoEl = handle?.video;
+        const mirror = handle?.isMirrored;
+        const canvas = canvasRef.current;
+        const ctx = canvas?.getContext('2d');
 
-      const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
-      const cw = videoEl.clientWidth, ch = videoEl.clientHeight;
-      if (vw === 0 || vh === 0) {
-        requestAnimationFrame(renderFrame);
-        return;
-      }
+        if (!videoEl || !canvas || !ctx || !detector) {
+          requestAnimationFrame(detect);
+          return;
+        }
 
-      canvas.width = cw;
-      canvas.height = ch;
-      const scaleX = cw / vw;
-      const scaleY = ch / vh;
+        canvas.width = videoEl.videoWidth;
+        canvas.height = videoEl.videoHeight;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // mirror canvas if video is mirrored
-      ctx.setTransform(
-        mirror ? -1 : 1, 0,
-        0, 1,
-        mirror ? cw : 0, 0
-      );
-      ctx.clearRect(0, 0, cw, ch);
+        const poses = await detector.estimatePoses(videoEl);
+        if (poses.length === 0) {
+          requestAnimationFrame(detect);
+          return;
+        }
 
-      const poses = await detector.estimatePoses(videoEl);
-      if (poses.length > 0) {
         const keypoints = poses[0].keypoints;
-        // draw skeleton
-        ctx.lineWidth = 2;
+        const adjacentPairs = poseDetection.util.getAdjacentPairs(poseDetection.SupportedModels.MoveNet);
+
+        ctx.save();
+
+        if (mirror) {
+          ctx.translate(canvas.width, 0);
+          ctx.scale(-1, 1);
+        }
+
+        // Draw skeleton lines
         ctx.strokeStyle = 'lime';
-        poseDetection.util
-          .getAdjacentPairs(poseDetection.SupportedModels.MoveNet)
-          .forEach(([i, j]) => {
-            const a = keypoints[i], b = keypoints[j];
-            if (a.score! > 0.3 && b.score! > 0.3) {
-              ctx.beginPath();
-              ctx.moveTo(a.x * scaleX, a.y * scaleY);
-              ctx.lineTo(b.x * scaleX, b.y * scaleY);
-              ctx.stroke();
-            }
-          });
-        // draw keypoints
-        ctx.fillStyle = 'red';
-        keypoints.forEach(kp => {
+        ctx.lineWidth = 2;
+        adjacentPairs.forEach(([i, j]) => {
+          const kp1 = keypoints[i];
+          const kp2 = keypoints[j];
+          if (kp1.score! > 0.3 && kp2.score! > 0.3) {
+            ctx.beginPath();
+            ctx.moveTo(kp1.x, kp1.y);
+            ctx.lineTo(kp2.x, kp2.y);
+            ctx.stroke();
+          }
+        });
+
+        // Draw keypoints
+        keypoints.forEach((kp) => {
           if (kp.score! > 0.3) {
             ctx.beginPath();
-            ctx.arc(kp.x * scaleX, kp.y * scaleY, 5, 0, 2*Math.PI);
+            ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
+            ctx.fillStyle = 'red';
             ctx.fill();
           }
         });
 
-        // measurements
+        ctx.restore();
+
+        // Measurement
+        const shoulderPx = getShoulderWidth(keypoints);
+        const torsoPx = getTorsoLength(keypoints);
+        const heightPx = getPixelHeight(keypoints);
         const fov = 60;
+
         const depthInfo = getLatestDepthInfo();
-        const useAR = !!depthInfo;
+        let shoulderCm = null, torsoCm = null, heightCm = null;
 
-        const shoulderPx = getShoulderWidth(keypoints) ?? 0;
-        const torsoPx    = getTorsoLength(keypoints) ?? 0;
-        const heightPx   = getPixelHeight(keypoints) ?? 0;
+        if (depthInfo && shoulderPx !== null && torsoPx !== null && heightPx !== null) {
+          shoulderCm = convertDepthToCmUsingAR(keypoints[5], keypoints[6], depthInfo, canvas.width, canvas.height);
+          torsoCm = convertDepthToCmUsingAR(keypoints[5], keypoints[11], depthInfo, canvas.width, canvas.height);
+          heightCm = convertDepthToCmUsingAR(keypoints[0], keypoints[16], depthInfo, canvas.width, canvas.height);
+        } else {
+          if (shoulderPx) shoulderCm = convertPxToCm(shoulderPx, fov, canvas.width);
+          if (torsoPx) torsoCm = convertPxToCm(torsoPx, fov, canvas.width);
+          if (heightPx) heightCm = convertPxToCm(heightPx, fov, canvas.width);
+        }
 
-        const shoulderCm = useAR
-          ? convertDepthToCmUsingAR(keypoints[5], keypoints[6], depthInfo!, vw, vh, fov)
-          : convertPxToCm(shoulderPx, fov, cw);
-        const torsoCm = useAR
-          ? convertDepthToCmUsingAR(keypoints[5], keypoints[11], depthInfo!, vw, vh, fov)
-          : convertPxToCm(torsoPx, fov, cw);
-        const heightCm = useAR
-          ? convertDepthToCmUsingAR(keypoints[0], keypoints[16], depthInfo!, vw, vh, fov)
-          : convertPxToCm(heightPx, fov, cw);
-
-        // reset transform for text
-        ctx.setTransform(1,0,0,1,0,0);
+        // Display measurements
         ctx.fillStyle = 'white';
         ctx.font = '16px sans-serif';
-        let y = 20;
-        if (shoulderCm != null) {
-          ctx.fillText(`Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(shoulderCm).toFixed(1)} in`, 10, y);
-          y += 20;
-        }
-        if (torsoCm != null) {
-          ctx.fillText(`Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(torsoCm).toFixed(1)} in`, 10, y);
-          y += 20;
-        }
-        if (heightCm != null) {
-          ctx.fillText(`Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(heightCm).toFixed(1)} in`, 10, y);
-        }
-      }
+        let offsetY = 20;
 
-      requestAnimationFrame(renderFrame);
-    }
+        if (shoulderCm && shoulderPx) {
+          ctx.fillText(
+            `Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(shoulderCm).toFixed(1)} in / ${shoulderPx.toFixed(0)} px`,
+            10,
+            offsetY
+          );
+          offsetY += 20;
+        }
 
-    init();
-  }, []);
+        if (torsoCm && torsoPx) {
+          ctx.fillText(
+            `Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(torsoCm).toFixed(1)} in / ${torsoPx.toFixed(0)} px`,
+            10,
+            offsetY
+          );
+          offsetY += 20;
+        }
+
+        if (heightCm && heightPx) {
+          ctx.fillText(
+            `Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(heightCm).toFixed(1)} in / ${heightPx.toFixed(0)} px`,
+            10,
+            offsetY
+          );
+        }
+
+        requestAnimationFrame(detect);
+      };
+
+      detect();
+    };
+
+    run();
+  }, [facingMode]);
 
   return (
     <div className="pose-wrapper">
       <div className="video-container">
-        <WebcamFeed ref={webcamRef} />
+        <WebcamFeed ref={webcamRef} facingMode={facingMode} />
         <canvas ref={canvasRef} className="pose-canvas" />
       </div>
     </div>
