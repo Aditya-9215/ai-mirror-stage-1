@@ -1,74 +1,71 @@
 // src/components/PoseDetector.tsx
-
 import React, { useRef, useEffect } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import '@tensorflow/tfjs-backend-webgl';
 import * as poseDetection from '@tensorflow-models/pose-detection';
-import { WebcamFeed } from './WebcamFeed';
+import { WebcamFeed, WebcamHandle } from './WebcamFeed';
 import {
   getShoulderWidth,
   getTorsoLength,
   getPixelHeight,
   convertPxToCm,
   convertCmToInch,
-  compute3DDistance,
+  convertDepthToCmUsingAR
 } from '../utils/measurements';
 import { getLatestDepthInfo } from './ar/arSession';
 
 export const PoseDetector: React.FC = () => {
-  const webcamRef = useRef<HTMLVideoElement>(null);
+  const webcamRef = useRef<WebcamHandle>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
   useEffect(() => {
-    const run = async () => {
-      // 1. Initialize TensorFlow.js
+    let detector: poseDetection.PoseDetector;
+
+    async function init() {
       await tf.setBackend('webgl');
       await tf.ready();
       console.log('✅ TensorFlow ready');
 
-      // 2. Create a MoveNet pose detector
-      const detector = await poseDetection.createDetector(
+      detector = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
         { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
       );
       console.log('✅ Pose detector created');
 
-      // 3. Main draw loop
-      const drawLoop = async () => {
-        const video = webcamRef.current;
-        const canvas = canvasRef.current;
-        if (!video || !canvas || video.readyState !== 4) {
-          requestAnimationFrame(drawLoop);
-          return;
-        }
+      requestAnimationFrame(renderFrame);
+    }
 
-        // 3a. Match canvas to displayed video size
-        const vw = video.videoWidth;
-        const vh = video.videoHeight;
-        const cw = video.clientWidth;
-        const ch = video.clientHeight;
-        const scaleX = cw / vw;
-        const scaleY = ch / vh;
+    async function renderFrame() {
+      const videoEl = webcamRef.current?.video;
+      const canvas = canvasRef.current;
+      const ctx = canvas?.getContext('2d');
+      if (!videoEl || !canvas || !ctx || !detector) {
+        requestAnimationFrame(renderFrame);
+        return;
+      }
 
-        canvas.width = cw;
-        canvas.height = ch;
+      const vw = videoEl.videoWidth;
+      const vh = videoEl.videoHeight;
+      const cw = videoEl.clientWidth;
+      const ch = videoEl.clientHeight;
+      if (vw === 0 || vh === 0) {
+        requestAnimationFrame(renderFrame);
+        return;
+      }
 
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          requestAnimationFrame(drawLoop);
-          return;
-        }
-        ctx.clearRect(0, 0, cw, ch);
+      // match canvas to displayed video
+      canvas.width = cw;
+      canvas.height = ch;
+      const scaleX = cw / vw;
+      const scaleY = ch / vh;
 
-        // 3b. Estimate poses
-        const poses = await detector.estimatePoses(video);
-        if (poses.length === 0) {
-          requestAnimationFrame(drawLoop);
-          return;
-        }
+      ctx.clearRect(0, 0, cw, ch);
+
+      const poses = await detector.estimatePoses(videoEl);
+      if (poses.length > 0) {
         const keypoints = poses[0].keypoints;
 
-        // 3c. Draw skeleton
+        // draw skeleton
         ctx.lineWidth = 2;
         ctx.strokeStyle = 'lime';
         poseDetection.util
@@ -84,7 +81,7 @@ export const PoseDetector: React.FC = () => {
             }
           });
 
-        // 3d. Draw keypoints
+        // draw keypoints
         ctx.fillStyle = 'red';
         keypoints.forEach((kp) => {
           if (kp.score! > 0.3) {
@@ -94,104 +91,65 @@ export const PoseDetector: React.FC = () => {
           }
         });
 
-        // 3e. Compute measurements
-        const depthInfo = getLatestDepthInfo();
-        let shoulderCm: number | null = null;
-        let torsoCm: number | null = null;
-        let heightCm: number | null = null;
-
-        // Try 3D if depth available
-        if (depthInfo) {
-          const s3d = compute3DDistance(
-            keypoints[5], // left_shoulder index
-            keypoints[6], // right_shoulder index
-            depthInfo,
-            vw,
-            vh
-          );
-          const t3d = compute3DDistance(
-            keypoints[5],
-            keypoints[11], // left_hip index
-            depthInfo,
-            vw,
-            vh
-          );
-          const h3d = compute3DDistance(
-            keypoints[0], // nose index
-            keypoints[15], // left_ankle index
-            depthInfo,
-            vw,
-            vh
-          );
-          shoulderCm = s3d;
-          torsoCm = t3d;
-          heightCm = h3d;
-        }
-
-        // Fallback to 2D approximation
+        // measurements
         const fov = 60;
-        const shoulderPx = getShoulderWidth(keypoints);
-        const torsoPx = getTorsoLength(keypoints);
-        const heightPx = getPixelHeight(keypoints);
+        const depthInfo = getLatestDepthInfo();
+        const useAR = !!depthInfo;
 
-        if (shoulderCm == null && shoulderPx != null) {
-          shoulderCm = convertPxToCm(shoulderPx, fov, cw);
-        }
-        if (torsoCm == null && torsoPx != null) {
-          torsoCm = convertPxToCm(torsoPx, fov, cw);
-        }
-        if (heightCm == null && heightPx != null) {
-          heightCm = convertPxToCm(heightPx, fov, cw);
-        }
+        const shoulderPx = getShoulderWidth(keypoints) ?? 0;
+        const torsoPx    = getTorsoLength(keypoints) ?? 0;
+        const heightPx   = getPixelHeight(keypoints) ?? 0;
 
-        // 3f. Draw measurement text
+        const shoulderCm = useAR
+          ? convertDepthToCmUsingAR(keypoints[5], keypoints[6], depthInfo!, vw, vh, fov)
+          : convertPxToCm(shoulderPx, fov, cw);
+        const torsoCm = useAR
+          ? convertDepthToCmUsingAR(keypoints[5], keypoints[11], depthInfo!, vw, vh, fov)
+          : convertPxToCm(torsoPx, fov, cw);
+        const heightCm = useAR
+          ? convertDepthToCmUsingAR(keypoints[0], keypoints[16], depthInfo!, vw, vh, fov)
+          : convertPxToCm(heightPx, fov, cw);
+
         ctx.fillStyle = 'white';
         ctx.font = '16px sans-serif';
         let y = 20;
-
-        if (shoulderCm != null && shoulderPx != null) {
+        if (shoulderCm != null) {
           ctx.fillText(
-            `Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(
-              shoulderCm
-            ).toFixed(1)} in / ${shoulderPx.toFixed(0)} px`,
+            `Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(shoulderCm).toFixed(1)} in`,
             10,
             y
           );
           y += 20;
         }
-        if (torsoCm != null && torsoPx != null) {
+        if (torsoCm != null) {
           ctx.fillText(
-            `Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(
-              torsoCm
-            ).toFixed(1)} in / ${torsoPx.toFixed(0)} px`,
+            `Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(torsoCm).toFixed(1)} in`,
             10,
             y
           );
           y += 20;
         }
-        if (heightCm != null && heightPx != null) {
+        if (heightCm != null) {
           ctx.fillText(
-            `Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(
-              heightCm
-            ).toFixed(1)} in / ${heightPx.toFixed(0)} px`,
+            `Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(heightCm).toFixed(1)} in`,
             10,
             y
           );
         }
+      }
 
-        requestAnimationFrame(drawLoop);
-      };
+      requestAnimationFrame(renderFrame);
+    }
 
-      drawLoop();
-    };
-
-    run();
+    init();
   }, []);
 
   return (
     <div className="pose-wrapper">
-      <WebcamFeed ref={webcamRef} />
-      <canvas ref={canvasRef} className="pose-canvas" />
+      <div className="video-container">
+        <WebcamFeed ref={webcamRef} />
+        <canvas ref={canvasRef} className="pose-canvas" />
+      </div>
     </div>
   );
 };

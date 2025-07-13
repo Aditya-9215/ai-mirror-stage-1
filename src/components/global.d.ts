@@ -1,17 +1,16 @@
-/// <reference types="webxr" />
+// src/global.d.ts
 
 export {};
 
 declare global {
   interface Navigator {
-    xr?: XRSystem;
+    xr?: any;
   }
 
-  interface XRCPUDepthInformation extends XRDepthInformation {
-    data: Uint8Array | Uint16Array;
+  interface XRCPUDepthInformation {
     width: number;
     height: number;
-    normDepthBufferFromNormView: Float32Array;
-    rawValueToMeters: number;
+    data: Float32Array;
+    getDepthInMeters(x: number, y: number): number;
   }
 }

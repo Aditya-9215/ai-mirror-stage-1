@@ -1,30 +1,52 @@
-import React, { useEffect, forwardRef } from 'react';
+// src/components/WebcamFeed.tsx
 
-export const WebcamFeed = forwardRef<HTMLVideoElement>((props, ref) => {
+import React, {
+  forwardRef,
+  useImperativeHandle,
+  useRef,
+  useEffect,
+} from 'react';
+
+export interface WebcamHandle {
+  video: HTMLVideoElement;
+}
+
+export const WebcamFeed = forwardRef<WebcamHandle>((_, ref) => {
+  const videoRef = useRef<HTMLVideoElement>(null);
+
+  // Expose the raw <video> element to parent via ref
+  useImperativeHandle(ref, () => ({
+    video: videoRef.current!,
+  }));
+
   useEffect(() => {
-    const start = async () => {
+    async function startCamera() {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'user' },
-          audio: false,
+          video: { facingMode: 'environment' },
         });
-        if (ref && 'current' in ref && ref.current) {
-          ref.current.srcObject = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          await videoRef.current.play();
         }
-      } catch (e) {
-        console.error('Webcam error', e);
+      } catch (err) {
+        console.error('❌ getUserMedia error:', err);
       }
-    };
-    start();
-  }, [ref]);
+    }
+    startCamera();
+  }, []);
 
   return (
     <video
-      ref={ref}
-      autoPlay
-      playsInline
+      ref={videoRef}
+      style={{
+        display: 'block',
+        width: '100%',
+        height: 'auto',
+        objectFit: 'cover',
+      }}
       muted
-      className="webcam-video"
+      playsInline
     />
   );
 });
