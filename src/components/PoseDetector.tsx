@@ -24,19 +24,17 @@ export const PoseDetector: React.FC = () => {
     async function init() {
       await tf.setBackend('webgl');
       await tf.ready();
-      console.log('✅ TensorFlow ready');
-
       detector = await poseDetection.createDetector(
         poseDetection.SupportedModels.MoveNet,
         { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
       );
-      console.log('✅ Pose detector created');
-
       requestAnimationFrame(renderFrame);
     }
 
     async function renderFrame() {
-      const videoEl = webcamRef.current?.video;
+      const handle = webcamRef.current;
+      const videoEl = handle?.video;
+      const mirror = handle?.isMirrored;
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext('2d');
       if (!videoEl || !canvas || !ctx || !detector) {
@@ -44,35 +42,36 @@ export const PoseDetector: React.FC = () => {
         return;
       }
 
-      const vw = videoEl.videoWidth;
-      const vh = videoEl.videoHeight;
-      const cw = videoEl.clientWidth;
-      const ch = videoEl.clientHeight;
+      const vw = videoEl.videoWidth, vh = videoEl.videoHeight;
+      const cw = videoEl.clientWidth, ch = videoEl.clientHeight;
       if (vw === 0 || vh === 0) {
         requestAnimationFrame(renderFrame);
         return;
       }
 
-      // match canvas to displayed video
       canvas.width = cw;
       canvas.height = ch;
       const scaleX = cw / vw;
       const scaleY = ch / vh;
 
+      // mirror canvas if video is mirrored
+      ctx.setTransform(
+        mirror ? -1 : 1, 0,
+        0, 1,
+        mirror ? cw : 0, 0
+      );
       ctx.clearRect(0, 0, cw, ch);
 
       const poses = await detector.estimatePoses(videoEl);
       if (poses.length > 0) {
         const keypoints = poses[0].keypoints;
-
         // draw skeleton
         ctx.lineWidth = 2;
         ctx.strokeStyle = 'lime';
         poseDetection.util
           .getAdjacentPairs(poseDetection.SupportedModels.MoveNet)
           .forEach(([i, j]) => {
-            const a = keypoints[i];
-            const b = keypoints[j];
+            const a = keypoints[i], b = keypoints[j];
             if (a.score! > 0.3 && b.score! > 0.3) {
               ctx.beginPath();
               ctx.moveTo(a.x * scaleX, a.y * scaleY);
@@ -80,13 +79,12 @@ export const PoseDetector: React.FC = () => {
               ctx.stroke();
             }
           });
-
         // draw keypoints
         ctx.fillStyle = 'red';
-        keypoints.forEach((kp) => {
+        keypoints.forEach(kp => {
           if (kp.score! > 0.3) {
             ctx.beginPath();
-            ctx.arc(kp.x * scaleX, kp.y * scaleY, 5, 0, 2 * Math.PI);
+            ctx.arc(kp.x * scaleX, kp.y * scaleY, 5, 0, 2*Math.PI);
             ctx.fill();
           }
         });
@@ -110,31 +108,21 @@ export const PoseDetector: React.FC = () => {
           ? convertDepthToCmUsingAR(keypoints[0], keypoints[16], depthInfo!, vw, vh, fov)
           : convertPxToCm(heightPx, fov, cw);
 
+        // reset transform for text
+        ctx.setTransform(1,0,0,1,0,0);
         ctx.fillStyle = 'white';
         ctx.font = '16px sans-serif';
         let y = 20;
         if (shoulderCm != null) {
-          ctx.fillText(
-            `Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(shoulderCm).toFixed(1)} in`,
-            10,
-            y
-          );
+          ctx.fillText(`Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(shoulderCm).toFixed(1)} in`, 10, y);
           y += 20;
         }
         if (torsoCm != null) {
-          ctx.fillText(
-            `Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(torsoCm).toFixed(1)} in`,
-            10,
-            y
-          );
+          ctx.fillText(`Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(torsoCm).toFixed(1)} in`, 10, y);
           y += 20;
         }
         if (heightCm != null) {
-          ctx.fillText(
-            `Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(heightCm).toFixed(1)} in`,
-            10,
-            y
-          );
+          ctx.fillText(`Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(heightCm).toFixed(1)} in`, 10, y);
         }
       }
 
