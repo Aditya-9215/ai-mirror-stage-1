@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import './App.css';
 import './index.css';
-import { PoseDetector } from './components/PoseDetector';
+import PoseDetector from './components/PoseDetector';
 import { startARSession } from './components/ar/arSession';
 
 function App() {
@@ -9,10 +9,8 @@ function App() {
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
 
   const handleStartAR = async () => {
-    const started = await startARSession();
-    if (started) {
-      setArStarted(true);
-    }
+    const ok = await startARSession();
+    if (ok) setArStarted(true);
   };
 
   const toggleCamera = () => {
@@ -21,21 +19,23 @@ function App() {
 
   return (
     <div className="App">
-      <header className="App-header">AI Mirror: AR Measurement Prototype</header>
+      <header className="App-header">
+        AI Mirror: AR Measurement Prototype
+      </header>
 
-      <div style={{ margin: '10px' }}>
+      <div className="controls">
         <button onClick={toggleCamera}>
           Switch to {facingMode === 'user' ? 'Back' : 'Front'} Camera
         </button>
+
+        {!arStarted && (
+          <button onClick={handleStartAR}>
+            Start AR Session
+          </button>
+        )}
       </div>
 
-      {!arStarted && (
-        <button className="start-ar-button" onClick={handleStartAR}>
-          Start AR Session
-        </button>
-      )}
-
-      <PoseDetector facingMode={facingMode} />
+      <PoseDetector facingMode={facingMode} arEnabled={arStarted} />
     </div>
   );
 }

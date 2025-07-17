@@ -1,3 +1,4 @@
+// src/components/PoseDetector.tsx
 import React, { useEffect, useRef } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import '@tensorflow/tfjs-backend-webgl';
@@ -9,150 +10,134 @@ import {
   getPixelHeight,
   convertPxToCm,
   convertCmToInch,
-  convertDepthToCmUsingAR
 } from '../utils/measurements';
-import { getLatestDepthInfo } from './ar/arSession';
 
 interface PoseDetectorProps {
-  facingMode?: 'user' | 'environment';
+  facingMode: 'user' | 'environment';
+  arEnabled: boolean;
 }
 
-export const PoseDetector: React.FC<PoseDetectorProps> = ({ facingMode = 'user' }) => {
+const PoseDetector: React.FC<PoseDetectorProps> = ({ facingMode, arEnabled }) => {
   const webcamRef = useRef<WebcamHandle>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Fix: allow null initial value
+  const detectorRef = useRef<poseDetection.PoseDetector | null>(null);
 
   useEffect(() => {
-    let detector: poseDetection.PoseDetector;
+    tf.setBackend('webgl')
+      .then(() => tf.ready())
+      .then(async () => {
+        detectorRef.current = await poseDetection.createDetector(
+          poseDetection.SupportedModels.MoveNet,
+          { modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
+        );
+        console.log('✅ Pose detector created');
+        requestAnimationFrame(drawLoop);
+      });
+  }, []);
 
-    const run = async () => {
-      await tf.setBackend('webgl');
-      await tf.ready();
-      console.log('✅ TensorFlow ready');
+  const drawLoop = async () => {
+    const detector = detectorRef.current;
+    const handle = webcamRef.current;
+    const canvas = canvasRef.current;
+    if (!detector || !handle || !canvas) {
+      return requestAnimationFrame(drawLoop);
+    }
 
-      detector = await poseDetection.createDetector(
-        poseDetection.SupportedModels.MoveNet,
-        {
-          modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING
-        }
-      );
-      console.log('✅ Pose detector created');
+    const video = handle.video!;
+    if (video.readyState < 2) {
+      return requestAnimationFrame(drawLoop);
+    }
 
-      const detect = async () => {
-        const handle = webcamRef.current;
-        const videoEl = handle?.video;
-        const mirror = handle?.isMirrored;
-        const canvas = canvasRef.current;
-        const ctx = canvas?.getContext('2d');
+    const ctx = canvas.getContext('2d')!;
+    const vw = video.videoWidth;
+    const vh = video.videoHeight;
+    const cw = canvas.clientWidth;
+    const ch = canvas.clientHeight;
 
-        if (!videoEl || !canvas || !ctx || !detector) {
-          requestAnimationFrame(detect);
-          return;
-        }
+    canvas.width = cw;
+    canvas.height = ch;
+    ctx.clearRect(0, 0, cw, ch);
 
-        canvas.width = videoEl.videoWidth;
-        canvas.height = videoEl.videoHeight;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+    // mirror if needed
+    ctx.save();
+    if (handle.isMirrored) {
+      ctx.translate(cw, 0);
+      ctx.scale(-1, 1);
+    }
 
-        const poses = await detector.estimatePoses(videoEl);
-        if (poses.length === 0) {
-          requestAnimationFrame(detect);
-          return;
-        }
+    const sx = cw / vw;
+    const sy = ch / vh;
 
-        const keypoints = poses[0].keypoints;
-        const adjacentPairs = poseDetection.util.getAdjacentPairs(poseDetection.SupportedModels.MoveNet);
+    const poses = await detector.estimatePoses(video);
+    if (poses[0]) {
+      const kp = poses[0].keypoints;
 
-        ctx.save();
-
-        if (mirror) {
-          ctx.translate(canvas.width, 0);
-          ctx.scale(-1, 1);
-        }
-
-        // Draw skeleton lines
-        ctx.strokeStyle = 'lime';
-        ctx.lineWidth = 2;
-        adjacentPairs.forEach(([i, j]) => {
-          const kp1 = keypoints[i];
-          const kp2 = keypoints[j];
-          if (kp1.score! > 0.3 && kp2.score! > 0.3) {
+      // skeleton
+      ctx.strokeStyle = 'lime';
+      ctx.lineWidth = 2;
+      poseDetection.util
+        .getAdjacentPairs(poseDetection.SupportedModels.MoveNet)
+        .forEach(([i, j]) => {
+          const a = kp[i],
+            b = kp[j];
+          if (a.score! > 0.3 && b.score! > 0.3) {
             ctx.beginPath();
-            ctx.moveTo(kp1.x, kp1.y);
-            ctx.lineTo(kp2.x, kp2.y);
+            ctx.moveTo(a.x * sx, a.y * sy);
+            ctx.lineTo(b.x * sx, b.y * sy);
             ctx.stroke();
           }
         });
 
-        // Draw keypoints
-        keypoints.forEach((kp) => {
-          if (kp.score! > 0.3) {
-            ctx.beginPath();
-            ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
-            ctx.fillStyle = 'red';
-            ctx.fill();
-          }
-        });
-
-        ctx.restore();
-
-        // Measurement
-        const shoulderPx = getShoulderWidth(keypoints);
-        const torsoPx = getTorsoLength(keypoints);
-        const heightPx = getPixelHeight(keypoints);
-        const fov = 60;
-
-        const depthInfo = getLatestDepthInfo();
-        let shoulderCm = null, torsoCm = null, heightCm = null;
-
-        if (depthInfo && shoulderPx !== null && torsoPx !== null && heightPx !== null) {
-          shoulderCm = convertDepthToCmUsingAR(keypoints[5], keypoints[6], depthInfo, canvas.width, canvas.height);
-          torsoCm = convertDepthToCmUsingAR(keypoints[5], keypoints[11], depthInfo, canvas.width, canvas.height);
-          heightCm = convertDepthToCmUsingAR(keypoints[0], keypoints[16], depthInfo, canvas.width, canvas.height);
-        } else {
-          if (shoulderPx) shoulderCm = convertPxToCm(shoulderPx, fov, canvas.width);
-          if (torsoPx) torsoCm = convertPxToCm(torsoPx, fov, canvas.width);
-          if (heightPx) heightCm = convertPxToCm(heightPx, fov, canvas.width);
+      // keypoints
+      ctx.fillStyle = 'red';
+      kp.forEach((k) => {
+        if (k.score! > 0.3) {
+          ctx.beginPath();
+          ctx.arc(k.x * sx, k.y * sy, 5, 0, 2 * Math.PI);
+          ctx.fill();
         }
+      });
+    }
+    ctx.restore();
 
-        // Display measurements
-        ctx.fillStyle = 'white';
-        ctx.font = '16px sans-serif';
-        let offsetY = 20;
+    // measurements
+    if (poses[0]) {
+      const kp = poses[0].keypoints;
+      const swPx = getShoulderWidth(kp) ?? 0;
+      const tlPx = getTorsoLength(kp) ?? 0;
+      const hPx = getPixelHeight(kp) ?? 0;
 
-        if (shoulderCm && shoulderPx) {
-          ctx.fillText(
-            `Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(shoulderCm).toFixed(1)} in / ${shoulderPx.toFixed(0)} px`,
-            10,
-            offsetY
-          );
-          offsetY += 20;
-        }
+      const shoulderCm = convertPxToCm(swPx, 60, cw);
+      const torsoCm = convertPxToCm(tlPx, 60, cw);
+      const heightCm = convertPxToCm(hPx, 60, cw);
 
-        if (torsoCm && torsoPx) {
-          ctx.fillText(
-            `Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(torsoCm).toFixed(1)} in / ${torsoPx.toFixed(0)} px`,
-            10,
-            offsetY
-          );
-          offsetY += 20;
-        }
+      ctx.fillStyle = 'white';
+      ctx.font = '16px sans-serif';
+      let y = 20;
+      ctx.fillText(
+        `Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(
+          shoulderCm
+        ).toFixed(1)} in`,
+        10,
+        y
+      );
+      y += 20;
+      ctx.fillText(
+        `Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(torsoCm).toFixed(1)} in`,
+        10,
+        y
+      );
+      y += 20;
+      ctx.fillText(
+        `Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(heightCm).toFixed(1)} in`,
+        10,
+        y
+      );
+    }
 
-        if (heightCm && heightPx) {
-          ctx.fillText(
-            `Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(heightCm).toFixed(1)} in / ${heightPx.toFixed(0)} px`,
-            10,
-            offsetY
-          );
-        }
-
-        requestAnimationFrame(detect);
-      };
-
-      detect();
-    };
-
-    run();
-  }, [facingMode]);
+    requestAnimationFrame(drawLoop);
+  };
 
   return (
     <div className="pose-wrapper">
@@ -163,3 +148,5 @@ export const PoseDetector: React.FC<PoseDetectorProps> = ({ facingMode = 'user' 
     </div>
   );
 };
+
+export default PoseDetector;
