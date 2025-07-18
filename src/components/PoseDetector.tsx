@@ -10,14 +10,16 @@ import {
   getPixelHeight,
   convertPxToCm,
   convertCmToInch,
+  convertDepthToCmUsingAR
 } from '../utils/measurements';
+import { getLatestDepthInfo } from './ar/arSession';
 
-interface PoseDetectorProps {
+interface Props {
   facingMode: 'user' | 'environment';
   arEnabled: boolean;
 }
 
-const PoseDetector: React.FC<PoseDetectorProps> = ({ facingMode, arEnabled }) => {
+const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled }) => {
   const webcamRef = useRef<WebcamHandle>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const detectorRef = useRef<poseDetection.PoseDetector | null>(null);
@@ -25,7 +27,7 @@ const PoseDetector: React.FC<PoseDetectorProps> = ({ facingMode, arEnabled }) =>
   useEffect(() => {
     let cancelled = false;
 
-    async function setup() {
+    (async () => {
       await tf.setBackend('webgl');
       await tf.ready();
       if (cancelled) return;
@@ -36,43 +38,36 @@ const PoseDetector: React.FC<PoseDetectorProps> = ({ facingMode, arEnabled }) =>
       );
       console.log('✅ Pose detector created');
 
-      // draw loop defined inside useEffect to avoid missing-deps lint
-      const drawLoop = async () => {
+      const loop = async () => {
         if (cancelled) return;
 
         const detector = detectorRef.current;
         const handle = webcamRef.current;
         const canvas = canvasRef.current;
         if (!detector || !handle || !canvas) {
-          return requestAnimationFrame(drawLoop);
+          return requestAnimationFrame(loop);
         }
 
         const video = handle.video!;
         if (video.readyState < 2) {
-          return requestAnimationFrame(drawLoop);
+          return requestAnimationFrame(loop);
         }
 
+        // **1:1 canvas size** to video resolution
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+
         const ctx = canvas.getContext('2d')!;
-        const vw = video.videoWidth;
-        const vh = video.videoHeight;
-        const cw = canvas.clientWidth;
-        const ch = canvas.clientHeight;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        canvas.width = cw;
-        canvas.height = ch;
-        ctx.clearRect(0, 0, cw, ch);
-
-        // mirror
+        // mirror if front camera
         ctx.save();
         if (handle.isMirrored) {
-          ctx.translate(cw, 0);
+          ctx.translate(canvas.width, 0);
           ctx.scale(-1, 1);
         }
 
-        const sx = cw / vw;
-        const sy = ch / vh;
-
-        // estimate
+        // no extra scaling: draw directly in video pixels
         const poses = await detector.estimatePoses(video);
         if (poses[0]) {
           const kp = poses[0].keypoints;
@@ -83,12 +78,11 @@ const PoseDetector: React.FC<PoseDetectorProps> = ({ facingMode, arEnabled }) =>
           poseDetection.util
             .getAdjacentPairs(poseDetection.SupportedModels.MoveNet)
             .forEach(([i, j]) => {
-              const a = kp[i],
-                b = kp[j];
+              const a = kp[i], b = kp[j];
               if (a.score! > 0.3 && b.score! > 0.3) {
                 ctx.beginPath();
-                ctx.moveTo(a.x * sx, a.y * sy);
-                ctx.lineTo(b.x * sx, b.y * sy);
+                ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
                 ctx.stroke();
               }
             });
@@ -98,64 +92,80 @@ const PoseDetector: React.FC<PoseDetectorProps> = ({ facingMode, arEnabled }) =>
           kp.forEach((k) => {
             if (k.score! > 0.3) {
               ctx.beginPath();
-              ctx.arc(k.x * sx, k.y * sy, 5, 0, 2 * Math.PI);
+              ctx.arc(k.x, k.y, 5, 0, 2 * Math.PI);
               ctx.fill();
             }
           });
         }
         ctx.restore();
 
-        // measurements (pixel→cm fallback)
+        // measurements
         if (poses[0]) {
           const kp = poses[0].keypoints;
           const swPx = getShoulderWidth(kp) ?? 0;
           const tlPx = getTorsoLength(kp) ?? 0;
           const hPx = getPixelHeight(kp) ?? 0;
 
-          const shoulderCm = convertPxToCm(swPx, 60, cw);
-          const torsoCm = convertPxToCm(tlPx, 60, cw);
-          const heightCm = convertPxToCm(hPx, 60, cw);
+          let shoulderCm: number, torsoCm: number, heightCm: number;
 
+          if (arEnabled) {
+            const depth = getLatestDepthInfo();
+            if (depth) {
+              shoulderCm = convertDepthToCmUsingAR(
+                kp[5], kp[6], depth,
+                video.videoWidth, video.videoHeight
+              )!;
+              torsoCm = convertDepthToCmUsingAR(
+                kp[5], kp[11], depth,
+                video.videoWidth, video.videoHeight
+              )!;
+              heightCm = convertDepthToCmUsingAR(
+                kp[0], kp[16], depth,
+                video.videoWidth, video.videoHeight
+              )!;
+            } else {
+              // fallback if depth info missing
+              shoulderCm = convertPxToCm(swPx, 60, canvas.width);
+              torsoCm    = convertPxToCm(tlPx, 60, canvas.width);
+              heightCm   = convertPxToCm(hPx,  60, canvas.width);
+            }
+          } else {
+            // pure pixel→cm
+            shoulderCm = convertPxToCm(swPx, 60, canvas.width);
+            torsoCm    = convertPxToCm(tlPx, 60, canvas.width);
+            heightCm   = convertPxToCm(hPx,  60, canvas.width);
+          }
+
+          // draw text in canvas‐pixel coords
           ctx.fillStyle = 'white';
-          ctx.font = '16px sans-serif';
-          let y = 20;
+          ctx.font = '24px sans-serif';
+          let y = 30;
           ctx.fillText(
-            `Shoulder: ${shoulderCm.toFixed(1)} cm / ${convertCmToInch(
-              shoulderCm
-            ).toFixed(1)} in`,
-            10,
-            y
+            `Shoulder: ${shoulderCm.toFixed(1)}cm / ${convertCmToInch(shoulderCm).toFixed(1)}in`,
+            10, y
           );
-          y += 20;
+          y += 30;
           ctx.fillText(
-            `Torso: ${torsoCm.toFixed(1)} cm / ${convertCmToInch(
-              torsoCm
-            ).toFixed(1)} in`,
-            10,
-            y
+            `Torso: ${torsoCm.toFixed(1)}cm / ${convertCmToInch(torsoCm).toFixed(1)}in`,
+            10, y
           );
-          y += 20;
+          y += 30;
           ctx.fillText(
-            `Height: ${heightCm.toFixed(1)} cm / ${convertCmToInch(
-              heightCm
-            ).toFixed(1)} in`,
-            10,
-            y
+            `Height: ${heightCm.toFixed(1)}cm / ${convertCmToInch(heightCm).toFixed(1)}in`,
+            10, y
           );
         }
 
-        requestAnimationFrame(drawLoop);
+        requestAnimationFrame(loop);
       };
 
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-      requestAnimationFrame(drawLoop);
-    }
+      requestAnimationFrame(loop);
+    })();
 
-    setup();
     return () => {
       cancelled = true;
     };
-  }, []); // no deps, drawLoop is internal
+  }, [arEnabled]);
 
   return (
     <div className="pose-wrapper">
