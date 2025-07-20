@@ -1,3 +1,5 @@
+// src/App.tsx
+
 import React, { useState } from 'react';
 import './App.css';
 import './index.css';
@@ -5,17 +7,8 @@ import PoseDetector from './components/PoseDetector';
 import { startARSession } from './components/ar/arSession';
 
 function App() {
-  const [arStarted, setArStarted] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
-
-  const handleStartAR = async () => {
-    const ok = await startARSession();
-    if (ok) setArStarted(true);
-  };
-
-  const toggleCamera = () => {
-    setFacingMode((prev) => (prev === 'user' ? 'environment' : 'user'));
-  };
+  const [arEnabled, setArEnabled] = useState(false);
 
   return (
     <div className="App">
@@ -24,18 +17,31 @@ function App() {
       </header>
 
       <div className="controls">
-        <button onClick={toggleCamera}>
-          Switch to {facingMode === 'user' ? 'Back' : 'Front'} Camera
+        <button
+          onClick={() =>
+            setFacingMode((f) => (f === 'user' ? 'environment' : 'user'))
+          }
+        >
+          Toggle Camera ({facingMode})
         </button>
 
-        {!arStarted && (
-          <button onClick={handleStartAR}>
-            Start AR Session
-          </button>
-        )}
+        <button
+          onClick={async () => {
+            if (!arEnabled) {
+              const ok = await startARSession(); // user gesture
+              if (ok) setArEnabled(true);
+            } else {
+              setArEnabled(false);
+            }
+          }}
+        >
+          {arEnabled ? 'Disable AR' : 'Start AR'}
+        </button>
       </div>
 
-      <PoseDetector facingMode={facingMode} arEnabled={arStarted} />
+      <div className="video-wrapper">
+        <PoseDetector facingMode={facingMode} arEnabled={arEnabled} />
+      </div>
     </div>
   );
 }
