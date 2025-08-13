@@ -31,6 +31,8 @@ export async function startARSession(): Promise<boolean> {
       return false;
     });
 
+  console.log('[AR Session] DOM Overlay supported:', domOverlaySupported);
+
   // Depth Sensing feature detection
   const supportsDepth = 'depth-sensing' in XRSession.prototype;
   if (supportsDepth) {
@@ -40,9 +42,12 @@ export async function startARSession(): Promise<boolean> {
         usagePreference: ['cpu-optimized', 'gpu-optimized'],
         dataFormatPreference: ['luminance-alpha', 'float32']
       };
+      console.log('[AR Session] Depth sensing supported.');
     } catch {
       console.warn('⚠️ depth-sensing setup failed.');
     }
+  } else {
+    console.log('[AR Session] Depth sensing not supported.');
   }
 
   try {
