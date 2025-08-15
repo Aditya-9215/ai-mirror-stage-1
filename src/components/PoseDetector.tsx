@@ -24,7 +24,6 @@ interface Props {
   onMeasurementsUpdate?: (m: Measurements) => void;
 }
 
-// Full MoveNet skeleton connections
 const SKELETON_CONNECTIONS: [string, string][] = [
   ['left_shoulder', 'right_shoulder'],
   ['left_shoulder', 'left_elbow'],
@@ -61,7 +60,7 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       await new Promise<void>((resolve) => {
         const onLoaded = () => {
           video.removeEventListener('loadeddata', onLoaded);
-          video.play().then(resolve).catch(() => resolve()); // handle autoplay issues
+          video.play().then(resolve).catch(() => resolve());
         };
         if (video.readyState >= 2) {
           video.play().then(resolve).catch(() => resolve());
@@ -119,7 +118,6 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
 
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Mirror drawing to match front camera view
       ctx.save();
       if (facingMode === 'user') {
         ctx.translate(canvas.width, 0);
@@ -132,7 +130,6 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       if (poses.length > 0) {
         const kps = poses[0].keypoints;
 
-        // draw keypoints
         for (const kp of kps) {
           if (kp.score && kp.score > 0.3) {
             ctx.beginPath();
@@ -142,7 +139,6 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
           }
         }
 
-        // draw skeleton connections
         ctx.strokeStyle = 'blue';
         ctx.lineWidth = 2;
         for (const [p1Name, p2Name] of SKELETON_CONNECTIONS) {
@@ -156,9 +152,8 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
           }
         }
 
-        // --- measurements (FOV-based for now) ---
-        const FOV_DEG = 60;      // assumed horizontal FOV (tune per device)
-        const DIST_CM = 65;      // assumed distance from camera (calibrate later)
+        const FOV_DEG = 60;
+        const DIST_CM = 65;
         const screenW = vw;
 
         const shoulderPx = getShoulderWidth(kps);
@@ -182,7 +177,6 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
 
       ctx.restore();
 
-      // push measurements up to App (for the fixed HUD)
       onMeasurementsUpdate?.(out);
 
       rafId = requestAnimationFrame(detect);
@@ -196,11 +190,14 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
 
     init();
 
+    // ✅ FIX: capture stable ref before cleanup to avoid ESLint warning & Netlify CI error
+    const videoElement = videoRef.current;
+
     return () => {
       cancelAnimationFrame(rafId);
-      if (videoRef.current && videoRef.current.srcObject) {
-        (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
-        videoRef.current.srcObject = null;
+      if (videoElement && videoElement.srcObject) {
+        (videoElement.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+        videoElement.srcObject = null;
       }
       detectorRef.current = null;
     };
