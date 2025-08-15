@@ -1,3 +1,4 @@
+// src/components/PoseDetector.tsx
 import React, { useRef, useEffect } from 'react';
 import * as tf from '@tensorflow/tfjs';
 import * as posedetection from '@tensorflow-models/pose-detection';
@@ -10,17 +11,43 @@ import {
   convertCmToInch
 } from '../utils/measurements';
 
+export type MeasurementTriple = { px: number; cm: number; inch: number };
+export type Measurements = {
+  shoulder?: MeasurementTriple;
+  torso?: MeasurementTriple;
+  height?: MeasurementTriple;
+};
+
 interface Props {
   facingMode: 'user' | 'environment';
   arEnabled: boolean;
+  onMeasurementsUpdate?: (m: Measurements) => void;
 }
 
-const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled }) => {
+// Full MoveNet skeleton connections
+const SKELETON_CONNECTIONS: [string, string][] = [
+  ['left_shoulder', 'right_shoulder'],
+  ['left_shoulder', 'left_elbow'],
+  ['left_elbow', 'left_wrist'],
+  ['right_shoulder', 'right_elbow'],
+  ['right_elbow', 'right_wrist'],
+  ['left_shoulder', 'left_hip'],
+  ['right_shoulder', 'right_hip'],
+  ['left_hip', 'right_hip'],
+  ['left_hip', 'left_knee'],
+  ['left_knee', 'left_ankle'],
+  ['right_hip', 'right_knee'],
+  ['right_knee', 'right_ankle']
+];
+
+const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUpdate }) => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const detectorRef = useRef<posedetection.PoseDetector | null>(null);
 
   useEffect(() => {
+    let rafId = 0;
+
     const setupCamera = async () => {
       const video = videoRef.current;
       if (!video) return;
@@ -29,9 +56,19 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled }) => {
         video: { facingMode },
         audio: false,
       });
-
       video.srcObject = stream;
-      await video.play();
+
+      await new Promise<void>((resolve) => {
+        const onLoaded = () => {
+          video.removeEventListener('loadeddata', onLoaded);
+          video.play().then(resolve).catch(() => resolve()); // handle autoplay issues
+        };
+        if (video.readyState >= 2) {
+          video.play().then(resolve).catch(() => resolve());
+        } else {
+          video.addEventListener('loadeddata', onLoaded);
+        }
+      });
     };
 
     const loadDetector = async () => {
@@ -42,120 +79,113 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled }) => {
         console.warn('⚠️ WebGL not available, falling back to CPU:', err);
         await tf.setBackend('cpu');
       }
-
       await tf.ready();
-
-      const detectorConfig = {
-        modelType: posedetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-      };
 
       detectorRef.current = await posedetection.createDetector(
         posedetection.SupportedModels.MoveNet,
-        detectorConfig
+        {
+          modelType: posedetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+        }
       );
 
       console.log('✅ Pose detector created');
     };
 
     const detect = async () => {
-      if (
-        detectorRef.current &&
-        videoRef.current &&
-        canvasRef.current &&
-        videoRef.current.readyState === 4
-      ) {
-        const video = videoRef.current;
-        const canvas = canvasRef.current;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
+      if (!detectorRef.current || !videoRef.current || !canvasRef.current) {
+        rafId = requestAnimationFrame(detect);
+        return;
+      }
 
-        // Match canvas size to video element's *displayed* size
-        canvas.width = video.clientWidth;
-        canvas.height = video.clientHeight;
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (!ctx || video.readyState < 2) {
+        rafId = requestAnimationFrame(detect);
+        return;
+      }
 
-        const poses = await detectorRef.current.estimatePoses(video);
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh) {
+        rafId = requestAnimationFrame(detect);
+        return;
+      }
 
-        if (poses.length > 0) {
-          const keypoints = poses[0].keypoints;
+      if (canvas.width !== vw || canvas.height !== vh) {
+        canvas.width = vw;
+        canvas.height = vh;
+      }
 
-          // Scaling factor if video is being stretched
-          const scaleX = canvas.width / video.videoWidth;
-          const scaleY = canvas.height / video.videoHeight;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-          // Draw keypoints
-          for (const keypoint of keypoints) {
-            if (keypoint.score !== undefined && keypoint.score > 0.3) {
-              const { x, y } = keypoint;
-              ctx.beginPath();
-              ctx.arc(x * scaleX, y * scaleY, 5, 0, 2 * Math.PI);
-              ctx.fillStyle = 'red';
-              ctx.fill();
-            }
-          }
+      // Mirror drawing to match front camera view
+      ctx.save();
+      if (facingMode === 'user') {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
 
-          ctx.strokeStyle = 'blue';
-          ctx.lineWidth = 2;
-          ctx.fillStyle = 'yellow';
-          ctx.font = '14px Arial';
+      const poses = await detectorRef.current.estimatePoses(video);
+      let out: Measurements = {};
 
-          // Shoulder width
-          const shoulderPx = getShoulderWidth(keypoints);
-          if (shoulderPx) {
-            const cm = convertPxToCm(shoulderPx, 60, video.videoWidth);
-            const inch = convertCmToInch(cm);
-            const leftShoulder = keypoints.find(k => k.name === 'left_shoulder')!;
-            const rightShoulder = keypoints.find(k => k.name === 'right_shoulder')!;
+      if (poses.length > 0) {
+        const kps = poses[0].keypoints;
+
+        // draw keypoints
+        for (const kp of kps) {
+          if (kp.score && kp.score > 0.3) {
             ctx.beginPath();
-            ctx.moveTo(leftShoulder.x * scaleX, leftShoulder.y * scaleY);
-            ctx.lineTo(rightShoulder.x * scaleX, rightShoulder.y * scaleY);
-            ctx.stroke();
-            ctx.fillText(
-              `${shoulderPx.toFixed(1)} px | ${cm.toFixed(1)} cm | ${inch.toFixed(1)} in`,
-              ((leftShoulder.x + rightShoulder.x) / 2) * scaleX,
-              ((leftShoulder.y + rightShoulder.y) / 2) * scaleY - 10
-            );
+            ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
+            ctx.fillStyle = 'red';
+            ctx.fill();
           }
+        }
 
-          // Torso length
-          const torsoPx = getTorsoLength(keypoints);
-          if (torsoPx) {
-            const cm = convertPxToCm(torsoPx, 60, video.videoWidth);
-            const inch = convertCmToInch(cm);
-            const shoulder = keypoints.find(k => k.name === 'left_shoulder')!;
-            const hip = keypoints.find(k => k.name === 'left_hip')!;
+        // draw skeleton connections
+        ctx.strokeStyle = 'blue';
+        ctx.lineWidth = 2;
+        for (const [p1Name, p2Name] of SKELETON_CONNECTIONS) {
+          const p1 = kps.find(k => k.name === p1Name && (k.score ?? 0) > 0.3);
+          const p2 = kps.find(k => k.name === p2Name && (k.score ?? 0) > 0.3);
+          if (p1 && p2) {
             ctx.beginPath();
-            ctx.moveTo(shoulder.x * scaleX, shoulder.y * scaleY);
-            ctx.lineTo(hip.x * scaleX, hip.y * scaleY);
+            ctx.moveTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
             ctx.stroke();
-            ctx.fillText(
-              `${torsoPx.toFixed(1)} px | ${cm.toFixed(1)} cm | ${inch.toFixed(1)} in`,
-              shoulder.x * scaleX + 5,
-              (shoulder.y + hip.y) / 2 * scaleY
-            );
           }
+        }
 
-          // Full height
-          const heightPx = getPixelHeight(keypoints);
-          if (heightPx) {
-            const cm = convertPxToCm(heightPx, 60, video.videoWidth);
-            const inch = convertCmToInch(cm);
-            const nose = keypoints.find(k => k.name === 'nose')!;
-            const ankle = keypoints.find(k => k.name === 'left_ankle')!;
-            ctx.beginPath();
-            ctx.moveTo(nose.x * scaleX, nose.y * scaleY);
-            ctx.lineTo(ankle.x * scaleX, ankle.y * scaleY);
-            ctx.stroke();
-            ctx.fillText(
-              `${heightPx.toFixed(1)} px | ${cm.toFixed(1)} cm | ${inch.toFixed(1)} in`,
-              nose.x * scaleX + 5,
-              (nose.y + ankle.y) / 2 * scaleY
-            );
-          }
+        // --- measurements (FOV-based for now) ---
+        const FOV_DEG = 60;      // assumed horizontal FOV (tune per device)
+        const DIST_CM = 65;      // assumed distance from camera (calibrate later)
+        const screenW = vw;
+
+        const shoulderPx = getShoulderWidth(kps);
+        if (shoulderPx) {
+          const cm = convertPxToCm(shoulderPx, FOV_DEG, screenW, DIST_CM);
+          out.shoulder = { px: shoulderPx, cm, inch: convertCmToInch(cm) };
+        }
+
+        const torsoPx = getTorsoLength(kps);
+        if (torsoPx) {
+          const cm = convertPxToCm(torsoPx, FOV_DEG, screenW, DIST_CM);
+          out.torso = { px: torsoPx, cm, inch: convertCmToInch(cm) };
+        }
+
+        const heightPx = getPixelHeight(kps);
+        if (heightPx) {
+          const cm = convertPxToCm(heightPx, FOV_DEG, screenW, DIST_CM);
+          out.height = { px: heightPx, cm, inch: convertCmToInch(cm) };
         }
       }
 
-      requestAnimationFrame(detect);
+      ctx.restore();
+
+      // push measurements up to App (for the fixed HUD)
+      onMeasurementsUpdate?.(out);
+
+      rafId = requestAnimationFrame(detect);
     };
 
     const init = async () => {
@@ -165,7 +195,16 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled }) => {
     };
 
     init();
-  }, [facingMode]);
+
+    return () => {
+      cancelAnimationFrame(rafId);
+      if (videoRef.current && videoRef.current.srcObject) {
+        (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+        videoRef.current.srcObject = null;
+      }
+      detectorRef.current = null;
+    };
+  }, [facingMode, arEnabled, onMeasurementsUpdate]);
 
   return (
     <div style={{ position: 'relative' }}>
@@ -175,10 +214,13 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled }) => {
           width: '100%',
           height: 'auto',
           transform: facingMode === 'user' ? 'scaleX(-1)' : 'scaleX(1)',
+          display: 'block',
         }}
+        playsInline
       />
       <canvas
         ref={canvasRef}
+        className="pose-canvas"
         style={{
           position: 'absolute',
           top: 0,

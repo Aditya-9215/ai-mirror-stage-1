@@ -1,3 +1,6 @@
+// src/components/ar/arSession.ts
+let _xrSession: XRSession | null = null;
+
 export async function startARSession(): Promise<boolean> {
   if (!navigator.xr) {
     console.warn('❌ WebXR not supported on this device.');
@@ -10,52 +13,53 @@ export async function startARSession(): Promise<boolean> {
     return false;
   }
 
+  const overlayRoot = document.getElementById('overlay-root');
+  if (!overlayRoot) {
+    console.warn('⚠️ overlay-root not found. Add <div id="overlay-root"></div> to index.html for dom-overlay.');
+    // You can still start immersive-ar without dom-overlay if you implement a WebGL XR render loop.
+    // For now, bail to avoid the black fullscreen experience.
+    return false;
+  }
+
   const sessionInit: XRSessionInit = {
     requiredFeatures: ['hit-test'],
-    optionalFeatures: []
+    optionalFeatures: ['dom-overlay', 'depth-sensing'],
   };
 
-  // DOM Overlay feature detection
-  const overlayRoot = document.getElementById('overlay-root');
-  const domOverlaySupported = await navigator.xr.isSessionSupported('immersive-ar')
-    .then(() => {
-      try {
-        sessionInit.optionalFeatures?.push('dom-overlay');
-        if (overlayRoot) {
-          (sessionInit as any).domOverlay = { root: overlayRoot };
-          return true;
-        }
-      } catch {
-        console.warn('⚠️ dom-overlay setup failed.');
-      }
-      return false;
-    });
-
-  console.log('[AR Session] DOM Overlay supported:', domOverlaySupported);
-
-  // Depth Sensing feature detection
-  const supportsDepth = 'depth-sensing' in XRSession.prototype;
-  if (supportsDepth) {
-    try {
-      sessionInit.optionalFeatures?.push('depth-sensing');
-      (sessionInit as any).depthSensing = {
-        usagePreference: ['cpu-optimized', 'gpu-optimized'],
-        dataFormatPreference: ['luminance-alpha', 'float32']
-      };
-      console.log('[AR Session] Depth sensing supported.');
-    } catch {
-      console.warn('⚠️ depth-sensing setup failed.');
-    }
-  } else {
-    console.log('[AR Session] Depth sensing not supported.');
-  }
+  (sessionInit as any).domOverlay = { root: overlayRoot };
+  (sessionInit as any).depthSensing = {
+    usagePreference: ['cpu-optimized', 'gpu-optimized'],
+    dataFormatPreference: ['luminance-alpha', 'float32'],
+  };
 
   try {
     const session = await navigator.xr.requestSession('immersive-ar', sessionInit);
-    console.log('✅ AR session started:', session);
+    _xrSession = session;
+    console.log('[AR] Session started', { domOverlay: !!overlayRoot });
+
+    session.addEventListener('end', () => {
+      console.log('[AR] Session ended');
+      _xrSession = null;
+    });
+
     return true;
   } catch (err) {
     console.error('❌ Failed to start AR session', err);
+    return false;
+  }
+}
+
+export async function endARSession(): Promise<boolean> {
+  try {
+    if (_xrSession) {
+      await _xrSession.end();
+      _xrSession = null;
+      console.log('[AR] Programmatically ended');
+      return true;
+    }
+    return false;
+  } catch (err) {
+    console.error('[AR] Failed to end session', err);
     return false;
   }
 }
