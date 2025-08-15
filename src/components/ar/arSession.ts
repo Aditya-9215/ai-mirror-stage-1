@@ -4,6 +4,21 @@ let _gl: WebGLRenderingContext | null = null;
 let _xrRefSpace: XRReferenceSpace | null = null;
 let _frameCallback: ((time: DOMHighResTimeStamp, frame: XRFrame) => void) | null = null;
 
+function stopPageCameraIfAny() {
+  try {
+    const video = document.querySelector('video');
+    if (video && video.srcObject) {
+      const ms = video.srcObject as MediaStream;
+      ms.getTracks().forEach(t => t.stop());
+      // detach so PoseDetector will re-open when AR ends
+      (video as HTMLVideoElement).srcObject = null;
+      console.log('[AR] stopped page camera before XR request');
+    }
+  } catch (e) {
+    console.warn('[AR] failed to stop page camera:', e);
+  }
+}
+
 export async function startARSession(): Promise<boolean> {
   if (!navigator.xr) {
     console.warn('❌ WebXR not supported on this device.');
@@ -16,15 +31,18 @@ export async function startARSession(): Promise<boolean> {
     return false;
   }
 
+  // Stop page camera first to avoid device camera conflicts.
+  stopPageCameraIfAny();
+
   const overlayRoot = document.getElementById('overlay-root');
 
+  // Do NOT include depth-sensing here by default — many UAs reject it.
   const sessionInit: XRSessionInit = {
     requiredFeatures: ['hit-test'],
-    optionalFeatures: ['dom-overlay', 'depth-sensing', 'local-floor'],
+    optionalFeatures: overlayRoot ? ['dom-overlay', 'local-floor'] : ['local-floor']
   };
 
   if (overlayRoot) {
-    // allow dom overlay if available; this keeps the DOM visible on top
     (sessionInit as any).domOverlay = { root: overlayRoot };
   }
 
@@ -33,66 +51,69 @@ export async function startARSession(): Promise<boolean> {
     _xrSession = session;
     console.log('[AR] session started', { domOverlay: !!overlayRoot });
 
-    // Create an off-screen canvas + XR-compatible WebGL context
+    // Create XR-compatible WebGL context
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl', { xrCompatible: true }) as WebGLRenderingContext | null;
-
     if (!gl) {
-      console.warn('[AR] failed to create XR-compatible WebGL context; session may still run but could show black.');
+      console.warn('[AR] Could not create XR-compatible WebGL context; session may still run but UX may vary.');
     } else {
       _gl = gl;
 
-      // Create and set XRWebGLLayer as the session base layer
-      // (some TypeScript environments don't have XRWebGLLayer typed)
+      // Create XRWebGLLayer if supported and set as baseLayer
       const XRWebGLLayerCtor = (window as any).XRWebGLLayer;
-      if (!XRWebGLLayerCtor) {
-        console.warn('[AR] XRWebGLLayer constructor not found on window; continuing without explicit layer.');
+      if (XRWebGLLayerCtor) {
+        try {
+          const xrGlLayer = new XRWebGLLayerCtor(session, gl);
+          await session.updateRenderState({ baseLayer: xrGlLayer });
+        } catch (e) {
+          console.warn('[AR] XRWebGLLayer/updateRenderState failed:', e);
+        }
       } else {
-        const xrGlLayer = new XRWebGLLayerCtor(session, gl);
-        await session.updateRenderState({ baseLayer: xrGlLayer });
+        console.warn('[AR] XRWebGLLayer not available on this browser.');
       }
 
-      // Request a reference space
+      // Request a reference space (local-floor preferred)
       try {
         _xrRefSpace = await session.requestReferenceSpace('local-floor');
       } catch {
-        _xrRefSpace = await session.requestReferenceSpace('local');
+        try {
+          _xrRefSpace = await session.requestReferenceSpace('local');
+        } catch {
+          _xrRefSpace = null;
+        }
       }
 
-      // Frame loop
+      // Frame loop that binds the XR framebuffer and clears it
       _frameCallback = (time: DOMHighResTimeStamp, frame: XRFrame) => {
-        if (!frame) return;
-        const sessionLocal = frame.session;
-        const pose = frame.getViewerPose(_xrRefSpace!);
-        if (!pose) {
-          // keep the loop alive even if pose missing
-          sessionLocal.requestAnimationFrame(_frameCallback!);
-          return;
-        }
+        const sess = frame.session;
+        const pose = _xrRefSpace ? frame.getViewerPose(_xrRefSpace) : null;
 
-        // Bind XR framebuffer
-        const baseLayer = sessionLocal.renderState.baseLayer as any;
-        if (baseLayer && _gl) {
+        const baseLayer = sess.renderState.baseLayer as any;
+        if (_gl && baseLayer && baseLayer.framebuffer) {
           _gl.bindFramebuffer(_gl.FRAMEBUFFER, baseLayer.framebuffer);
-
-          // For each view, set viewport and clear
-          for (const view of pose.views) {
-            const viewport = baseLayer.getViewport(view);
-            if (viewport) {
-              _gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
-            } else {
-              // Fallback to full size
-              _gl.viewport(0, 0, _gl.drawingBufferWidth, _gl.drawingBufferHeight);
+          if (pose && pose.views && pose.views.length) {
+            for (const view of pose.views) {
+              const viewport = baseLayer.getViewport(view);
+              if (viewport) {
+                _gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height);
+              } else {
+                _gl.viewport(0, 0, _gl.drawingBufferWidth, _gl.drawingBufferHeight);
+              }
+              _gl.clearColor(0.0, 0.0, 0.0, 0.0);
+              _gl.clear(_gl.COLOR_BUFFER_BIT | _gl.DEPTH_BUFFER_BIT);
+              // no 3D content yet — this prevents black screen and lets UA composite camera
             }
-            // Clear but keep alpha 0 so camera background can show through
+          } else {
+            // still clear to keep a valid framebuffer
+            _gl.viewport(0, 0, _gl.drawingBufferWidth, _gl.drawingBufferHeight);
             _gl.clearColor(0.0, 0.0, 0.0, 0.0);
             _gl.clear(_gl.COLOR_BUFFER_BIT | _gl.DEPTH_BUFFER_BIT);
-            // (Optional) Draw simple debugging content here if desired
           }
+          _gl.bindFramebuffer(_gl.FRAMEBUFFER, null);
         }
 
         // request next frame
-        sessionLocal.requestAnimationFrame(_frameCallback!);
+        sess.requestAnimationFrame(_frameCallback!);
       };
 
       session.requestAnimationFrame(_frameCallback);
@@ -101,6 +122,8 @@ export async function startARSession(): Promise<boolean> {
     session.addEventListener('end', () => {
       console.log('[AR] session ended (event)');
       cleanup();
+      // notify page that AR ended so PoseDetector (or App) can restart camera if needed
+      window.dispatchEvent(new CustomEvent('ar-session-ended'));
     });
 
     return true;
@@ -115,9 +138,7 @@ export async function endARSession(): Promise<boolean> {
   try {
     if (_xrSession) {
       await _xrSession.end();
-      // 'end' event will call cleanup, but call here also
-      cleanup();
-      console.log('[AR] session ended (programmatic)');
+      // cleanup will be called by 'end' event as well
       return true;
     }
     return false;
@@ -130,10 +151,6 @@ export async function endARSession(): Promise<boolean> {
 
 function cleanup() {
   try {
-    if (_xrSession) {
-      // session.end() triggers 'end' event which will call cleanup; ensure we don't double-run heavy steps
-      _xrSession = null;
-    }
     if (_gl) {
       const ext = _gl.getExtension('WEBGL_lose_context');
       if (ext) ext.loseContext();
@@ -141,6 +158,7 @@ function cleanup() {
     }
     _xrRefSpace = null;
     _frameCallback = null;
+    _xrSession = null;
   } catch (e) {
     console.warn('[AR] cleanup error', e);
   }
