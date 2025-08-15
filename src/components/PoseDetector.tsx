@@ -36,7 +36,12 @@ const SKELETON_CONNECTIONS: [string, string][] = [
   ['left_hip', 'left_knee'],
   ['left_knee', 'left_ankle'],
   ['right_hip', 'right_knee'],
-  ['right_knee', 'right_ankle']
+  ['right_knee', 'right_ankle'],
+  // ✅ Extra connections for more complete skeleton
+  ['nose', 'left_eye'],
+  ['nose', 'right_eye'],
+  ['left_eye', 'left_ear'],
+  ['right_eye', 'right_ear']
 ];
 
 const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUpdate }) => {
@@ -46,6 +51,7 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
 
   useEffect(() => {
     let rafId = 0;
+    let latestMeasurements: Measurements = {};
 
     const setupCamera = async () => {
       const video = videoRef.current;
@@ -130,6 +136,7 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       if (poses.length > 0) {
         const kps = poses[0].keypoints;
 
+        // Draw keypoints
         for (const kp of kps) {
           if (kp.score && kp.score > 0.3) {
             ctx.beginPath();
@@ -139,6 +146,7 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
           }
         }
 
+        // Draw skeleton connections
         ctx.strokeStyle = 'blue';
         ctx.lineWidth = 2;
         for (const [p1Name, p2Name] of SKELETON_CONNECTIONS) {
@@ -152,6 +160,7 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
           }
         }
 
+        // Measurements
         const FOV_DEG = 60;
         const DIST_CM = 65;
         const screenW = vw;
@@ -173,12 +182,33 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
           const cm = convertPxToCm(heightPx, FOV_DEG, screenW, DIST_CM);
           out.height = { px: heightPx, cm, inch: convertCmToInch(cm) };
         }
+
+        latestMeasurements = out;
       }
 
       ctx.restore();
 
-      onMeasurementsUpdate?.(out);
+      // ✅ Draw measurements in top-left corner
+      if (latestMeasurements) {
+        ctx.fillStyle = 'rgba(0,0,0,0.5)';
+        ctx.fillRect(10, 10, 220, 70);
+        ctx.fillStyle = 'white';
+        ctx.font = '14px Arial';
+        let y = 30;
+        for (const key of Object.keys(latestMeasurements) as (keyof Measurements)[]) {
+          const m = latestMeasurements[key];
+          if (m) {
+            ctx.fillText(
+              `${key}: ${m.cm.toFixed(1)} cm / ${m.inch.toFixed(1)} in`,
+              20,
+              y
+            );
+            y += 20;
+          }
+        }
+      }
 
+      onMeasurementsUpdate?.(out);
       rafId = requestAnimationFrame(detect);
     };
 
@@ -190,9 +220,7 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
 
     init();
 
-    // ✅ FIX: capture stable ref before cleanup to avoid ESLint warning & Netlify CI error
     const videoElement = videoRef.current;
-
     return () => {
       cancelAnimationFrame(rafId);
       if (videoElement && videoElement.srcObject) {
