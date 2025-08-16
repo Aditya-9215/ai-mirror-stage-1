@@ -10,7 +10,9 @@ import {
   convertPxToCm,
   convertCmToInch
 } from '../utils/measurements';
+import { startARSession, endARSession } from './ar/arSession';
 
+/** Types exported for App.tsx */
 export type MeasurementTriple = { px: number; cm: number; inch: number };
 export type Measurements = {
   shoulder?: MeasurementTriple;
@@ -24,6 +26,7 @@ interface Props {
   onMeasurementsUpdate?: (m: Measurements) => void;
 }
 
+/** Full MoveNet skeleton connections */
 const SKELETON_CONNECTIONS: [string, string][] = [
   ['left_shoulder', 'right_shoulder'],
   ['left_shoulder', 'left_elbow'],
@@ -37,11 +40,10 @@ const SKELETON_CONNECTIONS: [string, string][] = [
   ['left_knee', 'left_ankle'],
   ['right_hip', 'right_knee'],
   ['right_knee', 'right_ankle'],
-  // ✅ Extra connections for more complete skeleton
   ['nose', 'left_eye'],
   ['nose', 'right_eye'],
   ['left_eye', 'left_ear'],
-  ['right_eye', 'right_ear']
+  ['right_eye', 'right_ear'],
 ];
 
 const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUpdate }) => {
@@ -51,18 +53,25 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
 
   useEffect(() => {
     let rafId = 0;
-    let latestMeasurements: Measurements = {};
+    let running = true;
+    let xrHandlerCancel = false;
 
     const setupCamera = async () => {
       const video = videoRef.current;
       if (!video) return;
 
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode },
-        audio: false,
-      });
-      video.srcObject = stream;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode },
+          audio: false,
+        });
+        video.srcObject = stream;
+      } catch (err) {
+        console.error('[Camera] getUserMedia failed', err);
+        return;
+      }
 
+      // wait for enough data and then play (avoid interrupted play warnings)
       await new Promise<void>((resolve) => {
         const onLoaded = () => {
           video.removeEventListener('loadeddata', onLoaded);
@@ -77,6 +86,7 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
     };
 
     const loadDetector = async () => {
+      if (detectorRef.current) return; // guard for StrictMode double-mount
       try {
         await tf.setBackend('webgl');
         console.log('✅ Using WebGL backend');
@@ -85,147 +95,220 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
         await tf.setBackend('cpu');
       }
       await tf.ready();
-
       detectorRef.current = await posedetection.createDetector(
         posedetection.SupportedModels.MoveNet,
-        {
-          modelType: posedetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
-        }
+        { modelType: posedetection.movenet.modelType.SINGLEPOSE_LIGHTNING }
       );
-
       console.log('✅ Pose detector created');
     };
 
-    const detect = async () => {
-      if (!detectorRef.current || !videoRef.current || !canvasRef.current) {
-        rafId = requestAnimationFrame(detect);
-        return;
-      }
-
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      const ctx = canvas.getContext('2d');
-      if (!ctx || video.readyState < 2) {
-        rafId = requestAnimationFrame(detect);
-        return;
-      }
-
-      const vw = video.videoWidth;
-      const vh = video.videoHeight;
-      if (!vw || !vh) {
-        rafId = requestAnimationFrame(detect);
-        return;
-      }
-
-      if (canvas.width !== vw || canvas.height !== vh) {
-        canvas.width = vw;
-        canvas.height = vh;
-      }
-
+    // shared pose drawing logic (draws onto canvas using intrinsic coords)
+    const drawPoseResults = (poses: any[], mirror = false) => {
+      const canvas = canvasRef.current!;
+      const ctx = canvas.getContext('2d')!;
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+      if (poses.length === 0) return;
+      const kps = poses[0].keypoints;
+
+      // handle mirroring via transform
       ctx.save();
-      if (facingMode === 'user') {
+      if (mirror) {
         ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
       }
 
-      const poses = await detectorRef.current.estimatePoses(video);
-      let out: Measurements = {};
-
-      if (poses.length > 0) {
-        const kps = poses[0].keypoints;
-
-        // Draw keypoints
-        for (const kp of kps) {
-          if (kp.score && kp.score > 0.3) {
-            ctx.beginPath();
-            ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
-            ctx.fillStyle = 'red';
-            ctx.fill();
-          }
+      // draw keypoints
+      for (const kp of kps) {
+        if (kp.score && kp.score > 0.3) {
+          ctx.beginPath();
+          ctx.arc(kp.x, kp.y, 5, 0, 2 * Math.PI);
+          ctx.fillStyle = 'red';
+          ctx.fill();
         }
+      }
 
-        // Draw skeleton connections
-        ctx.strokeStyle = 'blue';
-        ctx.lineWidth = 2;
-        for (const [p1Name, p2Name] of SKELETON_CONNECTIONS) {
-          const p1 = kps.find(k => k.name === p1Name && (k.score ?? 0) > 0.3);
-          const p2 = kps.find(k => k.name === p2Name && (k.score ?? 0) > 0.3);
-          if (p1 && p2) {
-            ctx.beginPath();
-            ctx.moveTo(p1.x, p1.y);
-            ctx.lineTo(p2.x, p2.y);
-            ctx.stroke();
-          }
+      // draw skeleton
+      ctx.strokeStyle = 'blue';
+      ctx.lineWidth = 2;
+      for (const [p1Name, p2Name] of SKELETON_CONNECTIONS) {
+        const p1 = kps.find((k: any) => k.name === p1Name && (k.score ?? 0) > 0.3);
+        const p2 = kps.find((k: any) => k.name === p2Name && (k.score ?? 0) > 0.3);
+        if (p1 && p2) {
+          ctx.beginPath();
+          ctx.moveTo(p1.x, p1.y);
+          ctx.lineTo(p2.x, p2.y);
+          ctx.stroke();
         }
-
-        // Measurements
-        const FOV_DEG = 60;
-        const DIST_CM = 65;
-        const screenW = vw;
-
-        const shoulderPx = getShoulderWidth(kps);
-        if (shoulderPx) {
-          const cm = convertPxToCm(shoulderPx, FOV_DEG, screenW, DIST_CM);
-          out.shoulder = { px: shoulderPx, cm, inch: convertCmToInch(cm) };
-        }
-
-        const torsoPx = getTorsoLength(kps);
-        if (torsoPx) {
-          const cm = convertPxToCm(torsoPx, FOV_DEG, screenW, DIST_CM);
-          out.torso = { px: torsoPx, cm, inch: convertCmToInch(cm) };
-        }
-
-        const heightPx = getPixelHeight(kps);
-        if (heightPx) {
-          const cm = convertPxToCm(heightPx, FOV_DEG, screenW, DIST_CM);
-          out.height = { px: heightPx, cm, inch: convertCmToInch(cm) };
-        }
-
-        latestMeasurements = out;
       }
 
       ctx.restore();
+    };
 
-      // ✅ Draw measurements in top-left corner
-      if (latestMeasurements) {
-        ctx.fillStyle = 'rgba(0,0,0,0.5)';
-        ctx.fillRect(10, 10, 220, 70);
-        ctx.fillStyle = 'white';
-        ctx.font = '14px Arial';
-        let y = 30;
-        for (const key of Object.keys(latestMeasurements) as (keyof Measurements)[]) {
-          const m = latestMeasurements[key];
-          if (m) {
-            ctx.fillText(
-              `${key}: ${m.cm.toFixed(1)} cm / ${m.inch.toFixed(1)} in`,
-              20,
-              y
-            );
-            y += 20;
-          }
-        }
+    // video-based detection loop
+    const detectFromVideo = async () => {
+      if (!running) return;
+      if (!detectorRef.current || !videoRef.current || !canvasRef.current) {
+        rafId = requestAnimationFrame(detectFromVideo);
+        return;
+      }
+      const video = videoRef.current!;
+      const canvas = canvasRef.current!;
+      const ctx = canvas.getContext('2d')!;
+      if (video.readyState < 2) {
+        rafId = requestAnimationFrame(detectFromVideo);
+        return;
       }
 
+      // set canvas to match video intrinsic resolution (so 1:1 coordinates)
+      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+      }
+
+      // run pose detector on the HTMLVideoElement
+      const poses = await detectorRef.current.estimatePoses(video);
+      // draw with mirroring when using front camera
+      drawPoseResults(poses, facingMode === 'user');
+
+      // compute measurements
+      const vw = video.videoWidth;
+      const FOV_DEG = 60;
+      const DIST_CM = 65;
+      let out: Measurements = {};
+      if (poses.length > 0) {
+        const kps = poses[0].keypoints;
+        const shoulderPx = getShoulderWidth(kps);
+        if (shoulderPx) {
+          const cm = convertPxToCm(shoulderPx, FOV_DEG, vw, DIST_CM);
+          out.shoulder = { px: shoulderPx, cm, inch: convertCmToInch(cm) };
+        }
+        const torsoPx = getTorsoLength(kps);
+        if (torsoPx) {
+          const cm = convertPxToCm(torsoPx, FOV_DEG, vw, DIST_CM);
+          out.torso = { px: torsoPx, cm, inch: convertCmToInch(cm) };
+        }
+        const heightPx = getPixelHeight(kps);
+        if (heightPx) {
+          const cm = convertPxToCm(heightPx, FOV_DEG, vw, DIST_CM);
+          out.height = { px: heightPx, cm, inch: convertCmToInch(cm) };
+        }
+      }
       onMeasurementsUpdate?.(out);
-      rafId = requestAnimationFrame(detect);
+
+      rafId = requestAnimationFrame(detectFromVideo);
     };
 
-    const init = async () => {
-      await setupCamera();
+    // XR ImageBitmap-based handler (called by arSession per-frame)
+    const handleXRBitmap = async (bitmap: ImageBitmap) => {
+      if (!detectorRef.current || !canvasRef.current) {
+        bitmap.close?.();
+        return;
+      }
+
+      const canvas = canvasRef.current!;
+      const ctx = canvas.getContext('2d')!;
+      // ensure canvas matches bitmap size (or downscale if you prefer)
+      if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
+        canvas.width = bitmap.width;
+        canvas.height = bitmap.height;
+      }
+
+      // run pose detection on the bitmap directly
+      const poses = await detectorRef.current.estimatePoses(bitmap);
+
+      // draw (no mirror because XR AR frames are from back camera)
+      drawPoseResults(poses, false);
+
+      // measurements (use bitmap width as vw proxy)
+      const vw = bitmap.width;
+      const FOV_DEG = 60;
+      const DIST_CM = 65;
+      let out: Measurements = {};
+      if (poses.length > 0) {
+        const kps = poses[0].keypoints;
+        const shoulderPx = getShoulderWidth(kps);
+        if (shoulderPx) {
+          const cm = convertPxToCm(shoulderPx, FOV_DEG, vw, DIST_CM);
+          out.shoulder = { px: shoulderPx, cm, inch: convertCmToInch(cm) };
+        }
+        const torsoPx = getTorsoLength(kps);
+        if (torsoPx) {
+          const cm = convertPxToCm(torsoPx, FOV_DEG, vw, DIST_CM);
+          out.torso = { px: torsoPx, cm, inch: convertCmToInch(cm) };
+        }
+        const heightPx = getPixelHeight(kps);
+        if (heightPx) {
+          const cm = convertPxToCm(heightPx, FOV_DEG, vw, DIST_CM);
+          out.height = { px: heightPx, cm, inch: convertCmToInch(cm) };
+        }
+      }
+      onMeasurementsUpdate?.(out);
+      bitmap.close?.();
+    };
+
+    // initialization
+    (async () => {
       await loadDetector();
-      detect();
-    };
+      await setupCamera();
+      detectFromVideo();
+    })();
 
-    init();
+    // handle AR start/stop by listening to arEnabled changes inside this effect:
+    (async () => {
+      if (arEnabled) {
+        // stop video path and camera
+        running = false;
+        cancelAnimationFrame(rafId);
+        if (videoRef.current && videoRef.current.srcObject) {
+          (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+          videoRef.current.srcObject = null;
+        }
 
+        xrHandlerCancel = false;
+
+        // start XR session and provide frame callback
+        const ok = await startARSession(async (bitmap: ImageBitmap) => {
+          if (!xrHandlerCancel) await handleXRBitmap(bitmap);
+          else bitmap.close?.();
+        });
+
+        if (!ok) {
+          // AR start failed — resume video detection
+          xrHandlerCancel = true;
+          running = true;
+          await setupCamera();
+          detectFromVideo();
+        }
+      } else {
+        // stop XR and resume video
+        xrHandlerCancel = true;
+        await endARSession();
+        // small delay before restarting camera
+        setTimeout(async () => {
+          running = true;
+          await setupCamera();
+          detectFromVideo();
+        }, 300);
+      }
+    })();
+
+    // stable cleanup ref for ESLint-friendly cleanup in CI
     const videoElement = videoRef.current;
+
     return () => {
+      running = false;
+      xrHandlerCancel = true;
       cancelAnimationFrame(rafId);
+      (async () => {
+        try {
+          await endARSession();
+        } catch {}
+      })();
+      // cleanup camera
       if (videoElement && videoElement.srcObject) {
         (videoElement.srcObject as MediaStream).getTracks().forEach(t => t.stop());
-        videoElement.srcObject = null;
+        (videoElement as HTMLVideoElement).srcObject = null;
       }
       detectorRef.current = null;
     };
