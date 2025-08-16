@@ -12,7 +12,6 @@ import {
 } from '../utils/measurements';
 import { startARSession, endARSession } from './ar/arSession';
 
-/** Types exported for App.tsx */
 export type MeasurementTriple = { px: number; cm: number; inch: number };
 export type Measurements = {
   shoulder?: MeasurementTriple;
@@ -26,7 +25,6 @@ interface Props {
   onMeasurementsUpdate?: (m: Measurements) => void;
 }
 
-/** Full MoveNet skeleton connections */
 const SKELETON_CONNECTIONS: [string, string][] = [
   ['left_shoulder', 'right_shoulder'],
   ['left_shoulder', 'left_elbow'],
@@ -71,7 +69,6 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
         return;
       }
 
-      // wait for enough data and then play (avoid interrupted play warnings)
       await new Promise<void>((resolve) => {
         const onLoaded = () => {
           video.removeEventListener('loadeddata', onLoaded);
@@ -86,7 +83,7 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
     };
 
     const loadDetector = async () => {
-      if (detectorRef.current) return; // guard for StrictMode double-mount
+      if (detectorRef.current) return;
       try {
         await tf.setBackend('webgl');
         console.log('✅ Using WebGL backend');
@@ -102,7 +99,6 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       console.log('✅ Pose detector created');
     };
 
-    // shared pose drawing logic (draws onto canvas using intrinsic coords)
     const drawPoseResults = (poses: any[], mirror = false) => {
       const canvas = canvasRef.current!;
       const ctx = canvas.getContext('2d')!;
@@ -111,14 +107,12 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       if (poses.length === 0) return;
       const kps = poses[0].keypoints;
 
-      // handle mirroring via transform
       ctx.save();
       if (mirror) {
         ctx.translate(canvas.width, 0);
         ctx.scale(-1, 1);
       }
 
-      // draw keypoints
       for (const kp of kps) {
         if (kp.score && kp.score > 0.3) {
           ctx.beginPath();
@@ -128,7 +122,6 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
         }
       }
 
-      // draw skeleton
       ctx.strokeStyle = 'blue';
       ctx.lineWidth = 2;
       for (const [p1Name, p2Name] of SKELETON_CONNECTIONS) {
@@ -141,11 +134,9 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
           ctx.stroke();
         }
       }
-
       ctx.restore();
     };
 
-    // video-based detection loop
     const detectFromVideo = async () => {
       if (!running) return;
       if (!detectorRef.current || !videoRef.current || !canvasRef.current) {
@@ -154,24 +145,19 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       }
       const video = videoRef.current!;
       const canvas = canvasRef.current!;
-      const ctx = canvas.getContext('2d')!;
       if (video.readyState < 2) {
         rafId = requestAnimationFrame(detectFromVideo);
         return;
       }
 
-      // set canvas to match video intrinsic resolution (so 1:1 coordinates)
       if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
         canvas.width = video.videoWidth;
         canvas.height = video.videoHeight;
       }
 
-      // run pose detector on the HTMLVideoElement
       const poses = await detectorRef.current.estimatePoses(video);
-      // draw with mirroring when using front camera
       drawPoseResults(poses, facingMode === 'user');
 
-      // compute measurements
       const vw = video.videoWidth;
       const FOV_DEG = 60;
       const DIST_CM = 65;
@@ -199,7 +185,6 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       rafId = requestAnimationFrame(detectFromVideo);
     };
 
-    // XR ImageBitmap-based handler (called by arSession per-frame)
     const handleXRBitmap = async (bitmap: ImageBitmap) => {
       if (!detectorRef.current || !canvasRef.current) {
         bitmap.close?.();
@@ -207,20 +192,14 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       }
 
       const canvas = canvasRef.current!;
-      const ctx = canvas.getContext('2d')!;
-      // ensure canvas matches bitmap size (or downscale if you prefer)
       if (canvas.width !== bitmap.width || canvas.height !== bitmap.height) {
         canvas.width = bitmap.width;
         canvas.height = bitmap.height;
       }
 
-      // run pose detection on the bitmap directly
       const poses = await detectorRef.current.estimatePoses(bitmap);
-
-      // draw (no mirror because XR AR frames are from back camera)
       drawPoseResults(poses, false);
 
-      // measurements (use bitmap width as vw proxy)
       const vw = bitmap.width;
       const FOV_DEG = 60;
       const DIST_CM = 65;
@@ -247,17 +226,14 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       bitmap.close?.();
     };
 
-    // initialization
     (async () => {
       await loadDetector();
       await setupCamera();
       detectFromVideo();
     })();
 
-    // handle AR start/stop by listening to arEnabled changes inside this effect:
     (async () => {
       if (arEnabled) {
-        // stop video path and camera
         running = false;
         cancelAnimationFrame(rafId);
         if (videoRef.current && videoRef.current.srcObject) {
@@ -267,24 +243,20 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
 
         xrHandlerCancel = false;
 
-        // start XR session and provide frame callback
         const ok = await startARSession(async (bitmap: ImageBitmap) => {
           if (!xrHandlerCancel) await handleXRBitmap(bitmap);
           else bitmap.close?.();
         });
 
         if (!ok) {
-          // AR start failed — resume video detection
           xrHandlerCancel = true;
           running = true;
           await setupCamera();
           detectFromVideo();
         }
       } else {
-        // stop XR and resume video
         xrHandlerCancel = true;
         await endARSession();
-        // small delay before restarting camera
         setTimeout(async () => {
           running = true;
           await setupCamera();
@@ -293,9 +265,7 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
       }
     })();
 
-    // stable cleanup ref for ESLint-friendly cleanup in CI
     const videoElement = videoRef.current;
-
     return () => {
       running = false;
       xrHandlerCancel = true;
@@ -305,7 +275,6 @@ const PoseDetector: React.FC<Props> = ({ facingMode, arEnabled, onMeasurementsUp
           await endARSession();
         } catch {}
       })();
-      // cleanup camera
       if (videoElement && videoElement.srcObject) {
         (videoElement.srcObject as MediaStream).getTracks().forEach(t => t.stop());
         (videoElement as HTMLVideoElement).srcObject = null;

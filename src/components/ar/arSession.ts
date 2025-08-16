@@ -4,22 +4,13 @@ let _gl: WebGLRenderingContext | null = null;
 let _xrRefSpace: XRReferenceSpace | null = null;
 let _frameCallback: ((time: DOMHighResTimeStamp, frame: XRFrame) => void) | null = null;
 
-function stopPageCameraIfAny() {
-  try {
-    const video = document.querySelector('video');
-    if (video && video.srcObject) {
-      const ms = video.srcObject as MediaStream;
-      ms.getTracks().forEach(t => t.stop());
-      // detach so PoseDetector will re-open when AR ends
-      (video as HTMLVideoElement).srcObject = null;
-      console.log('[AR] stopped page camera before XR request');
-    }
-  } catch (e) {
-    console.warn('[AR] failed to stop page camera:', e);
-  }
-}
-
-export async function startARSession(): Promise<boolean> {
+/**
+ * Start an immersive-ar session.
+ * @param onXRFrame Optional callback called each XR frame with an ImageBitmap of the XR framebuffer.
+ */
+export async function startARSession(
+  onXRFrame?: (bitmap: ImageBitmap) => Promise<void> | void
+): Promise<boolean> {
   if (!navigator.xr) {
     console.warn('❌ WebXR not supported on this device.');
     return false;
@@ -31,35 +22,37 @@ export async function startARSession(): Promise<boolean> {
     return false;
   }
 
-  // Stop page camera first to avoid device camera conflicts.
-  stopPageCameraIfAny();
+  // stop any page camera to avoid resource conflicts (PoseDetector will re-open later)
+  try {
+    const pageVideo = document.querySelector('video');
+    if (pageVideo && (pageVideo as HTMLVideoElement).srcObject) {
+      (pageVideo as HTMLVideoElement).srcObject = null;
+      console.log('[AR] stopped page camera before XR request');
+    }
+  } catch (e) {
+    // ignore
+  }
 
   const overlayRoot = document.getElementById('overlay-root');
-
-  // Do NOT include depth-sensing here by default — many UAs reject it.
   const sessionInit: XRSessionInit = {
     requiredFeatures: ['hit-test'],
-    optionalFeatures: overlayRoot ? ['dom-overlay', 'local-floor'] : ['local-floor']
+    optionalFeatures: overlayRoot ? ['dom-overlay', 'local-floor'] : ['local-floor'],
   };
-
-  if (overlayRoot) {
-    (sessionInit as any).domOverlay = { root: overlayRoot };
-  }
+  if (overlayRoot) (sessionInit as any).domOverlay = { root: overlayRoot };
 
   try {
     const session = await navigator.xr.requestSession('immersive-ar', sessionInit);
     _xrSession = session;
     console.log('[AR] session started', { domOverlay: !!overlayRoot });
 
-    // Create XR-compatible WebGL context
+    // create offscreen canvas + xr-compatible gl
     const canvas = document.createElement('canvas');
     const gl = canvas.getContext('webgl', { xrCompatible: true }) as WebGLRenderingContext | null;
     if (!gl) {
-      console.warn('[AR] Could not create XR-compatible WebGL context; session may still run but UX may vary.');
+      console.warn('[AR] could not create XR-compatible WebGL context; AR frames->bitmap may fail.');
     } else {
       _gl = gl;
 
-      // Create XRWebGLLayer if supported and set as baseLayer
       const XRWebGLLayerCtor = (window as any).XRWebGLLayer;
       if (XRWebGLLayerCtor) {
         try {
@@ -69,10 +62,9 @@ export async function startARSession(): Promise<boolean> {
           console.warn('[AR] XRWebGLLayer/updateRenderState failed:', e);
         }
       } else {
-        console.warn('[AR] XRWebGLLayer not available on this browser.');
+        console.warn('[AR] XRWebGLLayer constructor not found on window.');
       }
 
-      // Request a reference space (local-floor preferred)
       try {
         _xrRefSpace = await session.requestReferenceSpace('local-floor');
       } catch {
@@ -83,14 +75,15 @@ export async function startARSession(): Promise<boolean> {
         }
       }
 
-      // Frame loop that binds the XR framebuffer and clears it
+      // Frame loop
       _frameCallback = (time: DOMHighResTimeStamp, frame: XRFrame) => {
         const sess = frame.session;
-        const pose = _xrRefSpace ? frame.getViewerPose(_xrRefSpace) : null;
-
         const baseLayer = sess.renderState.baseLayer as any;
+
         if (_gl && baseLayer && baseLayer.framebuffer) {
           _gl.bindFramebuffer(_gl.FRAMEBUFFER, baseLayer.framebuffer);
+
+          const pose = _xrRefSpace ? frame.getViewerPose(_xrRefSpace) : null;
           if (pose && pose.views && pose.views.length) {
             for (const view of pose.views) {
               const viewport = baseLayer.getViewport(view);
@@ -101,18 +94,49 @@ export async function startARSession(): Promise<boolean> {
               }
               _gl.clearColor(0.0, 0.0, 0.0, 0.0);
               _gl.clear(_gl.COLOR_BUFFER_BIT | _gl.DEPTH_BUFFER_BIT);
-              // no 3D content yet — this prevents black screen and lets UA composite camera
             }
           } else {
-            // still clear to keep a valid framebuffer
             _gl.viewport(0, 0, _gl.drawingBufferWidth, _gl.drawingBufferHeight);
             _gl.clearColor(0.0, 0.0, 0.0, 0.0);
             _gl.clear(_gl.COLOR_BUFFER_BIT | _gl.DEPTH_BUFFER_BIT);
           }
+
+          // optional: capture pixels and call onXRFrame(bitmap)
+          if (onXRFrame && _gl) {
+            try {
+              // determine read size
+              const width = (baseLayer.framebufferWidth) || _gl.drawingBufferWidth;
+              const height = (baseLayer.framebufferHeight) || _gl.drawingBufferHeight;
+
+              // read pixels
+              const buf = new Uint8Array(width * height * 4);
+              _gl.readPixels(0, 0, width, height, _gl.RGBA, _gl.UNSIGNED_BYTE, buf);
+
+              // create ImageData and ImageBitmap
+              const imageData = new ImageData(new Uint8ClampedArray(buf.buffer), width, height);
+
+              // createImageBitmap is async — do it non-blocking
+              createImageBitmap(imageData)
+                .then(async (bitmap) => {
+                  try {
+                    await onXRFrame(bitmap);
+                  } catch (e) {
+                    console.warn('[AR] onXRFrame handler failed:', e);
+                  } finally {
+                    bitmap.close?.();
+                  }
+                })
+                .catch((err) => {
+                  console.warn('[AR] createImageBitmap failed:', err);
+                });
+            } catch (e) {
+              console.warn('[AR] readPixels/createImageBitmap failed:', e);
+            }
+          }
+
           _gl.bindFramebuffer(_gl.FRAMEBUFFER, null);
         }
 
-        // request next frame
         sess.requestAnimationFrame(_frameCallback!);
       };
 
@@ -122,8 +146,6 @@ export async function startARSession(): Promise<boolean> {
     session.addEventListener('end', () => {
       console.log('[AR] session ended (event)');
       cleanup();
-      // notify page that AR ended so PoseDetector (or App) can restart camera if needed
-      window.dispatchEvent(new CustomEvent('ar-session-ended'));
     });
 
     return true;
@@ -138,7 +160,8 @@ export async function endARSession(): Promise<boolean> {
   try {
     if (_xrSession) {
       await _xrSession.end();
-      // cleanup will be called by 'end' event as well
+      // cleanup will be done by 'end' listener or here
+      cleanup();
       return true;
     }
     return false;
