@@ -1,5 +1,11 @@
 // src/components/PoseDetector.tsx
-import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import React, {
+  forwardRef,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useCallback
+} from 'react';
 import * as tf from '@tensorflow/tfjs';
 import * as posedetection from '@tensorflow-models/pose-detection';
 import '@tensorflow/tfjs-backend-webgl';
@@ -54,7 +60,6 @@ const PoseDetector = forwardRef(function PoseDetector(
   const rafRef = useRef<number | null>(null);
   const onMeasurementsUpdateRef = useRef<typeof onMeasurementsUpdate>(onMeasurementsUpdate);
 
-  // Keep callback stable
   useEffect(() => {
     onMeasurementsUpdateRef.current = onMeasurementsUpdate;
   }, [onMeasurementsUpdate]);
@@ -74,7 +79,7 @@ const PoseDetector = forwardRef(function PoseDetector(
     console.log('✅ Pose detector created');
   };
 
-  const extractMeasurementsFromPoses = (poses: any[], vw: number): Measurements => {
+  const extractMeasurementsFromPoses = useCallback((poses: any[], vw: number): Measurements => {
     const out: Measurements = {};
     if (!poses || poses.length === 0) return out;
     const kps = poses[0].keypoints;
@@ -97,9 +102,9 @@ const PoseDetector = forwardRef(function PoseDetector(
       out.height = { px: heightPx, cm, inch: convertCmToInch(cm) };
     }
     return out;
-  };
+  }, []);
 
-  const drawPosesAndMeasurements = (poses: any[], vw: number, mirror = false) => {
+  const drawPosesAndMeasurements = useCallback((poses: any[], vw: number, mirror = false) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -151,9 +156,8 @@ const PoseDetector = forwardRef(function PoseDetector(
         y += 18;
       }
     });
-  };
+  }, [extractMeasurementsFromPoses]);
 
-  // helper: only call parent when we have at least one measurement
   const emitIfNonEmpty = (m: Measurements) => {
     if (!m) return;
     const hasAny =
@@ -182,7 +186,6 @@ const PoseDetector = forwardRef(function PoseDetector(
     },
   }));
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     let mounted = true;
 
@@ -195,7 +198,7 @@ const PoseDetector = forwardRef(function PoseDetector(
           if (video.readyState >= 2) return;
           await video.play().catch(() => {});
           return;
-        } catch {/* fall through */}
+        } catch {}
       }
 
       try {
@@ -289,7 +292,7 @@ const PoseDetector = forwardRef(function PoseDetector(
       })();
       detectorRef.current = null;
     };
-  }, [facingMode]);
+  }, [facingMode, drawPosesAndMeasurements, extractMeasurementsFromPoses]);
 
   return (
     <div style={{ position: 'relative' }}>
