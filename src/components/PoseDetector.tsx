@@ -182,6 +182,7 @@ const PoseDetector = forwardRef(function PoseDetector(
     },
   }));
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     let mounted = true;
 
@@ -189,7 +190,6 @@ const PoseDetector = forwardRef(function PoseDetector(
       const video = videoRef.current;
       if (!video) return;
 
-      // If the video already has a stream attached, don't request a new one.
       if (video.srcObject) {
         try {
           if (video.readyState >= 2) return;
@@ -199,7 +199,6 @@ const PoseDetector = forwardRef(function PoseDetector(
       }
 
       try {
-        // Lower res + fps to keep things stable
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode,
@@ -290,7 +289,7 @@ const PoseDetector = forwardRef(function PoseDetector(
       })();
       detectorRef.current = null;
     };
-  }, [facingMode]); // ← only run when facingMode changes
+  }, [facingMode]);
 
   return (
     <div style={{ position: 'relative' }}>
