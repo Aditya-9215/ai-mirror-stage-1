@@ -6,7 +6,7 @@ let _frameCallback: ((time: DOMHighResTimeStamp, frame: XRFrame) => void) | null
 
 /**
  * Start an immersive-ar session.
- * onXRFrame (optional) will be called with an ImageBitmap for each XR frame (best-effort).
+ * onXRFrame (optional) will be called with an ImageBitmap for each XR frame (if framebuffer read succeeds).
  */
 export async function startARSession(
   onXRFrame?: (bitmap: ImageBitmap) => Promise<void> | void
@@ -22,23 +22,25 @@ export async function startARSession(
     return false;
   }
 
-  // IMPORTANT: do NOT stop the page camera; we want PoseDetector to keep running.
-  // (Previously we nulled the video srcObject here — removed to keep measurements visible.)
+  // Pause any page camera to avoid conflicts (pause rather than nulling to reduce flicker)
+  try {
+    const pageVideo = document.querySelector('video') as HTMLVideoElement | null;
+    if (pageVideo && pageVideo.srcObject) {
+      try {
+        pageVideo.pause();
+        console.log('[AR] paused page camera before XR request');
+      } catch { /* ignore */ }
+    }
+  } catch (e) {
+    // ignore
+  }
 
   const overlayRoot = document.getElementById('overlay-root');
-
-  // If overlay root exists, request dom-overlay as REQUIRED so our DOM HUD (canvas, etc.) is visible in AR.
-  const sessionInit: XRSessionInit = overlayRoot
-    ? {
-        requiredFeatures: ['hit-test', 'dom-overlay'],
-        optionalFeatures: ['local-floor'],
-        // @ts-ignore domOverlay is still experimental
-        domOverlay: { root: overlayRoot },
-      }
-    : {
-        requiredFeatures: ['hit-test'],
-        optionalFeatures: ['local-floor'],
-      };
+  const sessionInit: XRSessionInit = {
+    requiredFeatures: ['hit-test'],
+    optionalFeatures: overlayRoot ? ['dom-overlay', 'local-floor'] : ['local-floor'],
+  };
+  if (overlayRoot) (sessionInit as any).domOverlay = { root: overlayRoot };
 
   try {
     const session = await navigator.xr.requestSession('immersive-ar', sessionInit);
@@ -99,7 +101,7 @@ export async function startARSession(
             _gl.clear(_gl.COLOR_BUFFER_BIT | _gl.DEPTH_BUFFER_BIT);
           }
 
-          // Best-effort: capture framebuffer to bitmap for PoseDetector (may not include camera imagery on some UA)
+          // optionally capture framebuffer and create ImageBitmap
           if (onXRFrame && _gl) {
             try {
               const width = (baseLayer.framebufferWidth) || _gl.drawingBufferWidth;
@@ -140,12 +142,31 @@ export async function startARSession(
     session.addEventListener('end', () => {
       console.log('[AR] session ended (event)');
       cleanup();
+
+      // attempt to resume page camera if it exists
+      try {
+        const pageVideo = document.querySelector('video') as HTMLVideoElement | null;
+        if (pageVideo && pageVideo.srcObject) {
+          pageVideo.play().catch(() => {});
+        }
+      } catch (e) {
+        // ignore
+      }
     });
 
     return true;
   } catch (err) {
     console.error('[AR] Failed to start session', err);
     cleanup();
+
+    // try to resume page camera even on failure
+    try {
+      const pageVideo = document.querySelector('video') as HTMLVideoElement | null;
+      if (pageVideo && pageVideo.srcObject) {
+        pageVideo.play().catch(() => {});
+      }
+    } catch {}
+
     return false;
   }
 }
