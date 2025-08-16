@@ -1,5 +1,5 @@
 // src/App.tsx
-import React, { useState } from 'react';
+import React, { useRef, useState } from 'react';
 import './App.css';
 import './index.css';
 import PoseDetector, { Measurements } from './components/PoseDetector';
@@ -8,13 +8,32 @@ import { startARSession, endARSession } from './components/ar/arSession';
 function App() {
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
   const [arEnabled, setArEnabled] = useState(false);
-  const [measurements, setMeasurements] = useState<Measurements | null>(null);
+  const [measurements, setMeasurements] = useState<Measurements>({});
+  const poseRef = useRef<any>(null);
+
+  const handleStartStopAR = async () => {
+    if (!arEnabled) {
+      // must be called directly from a user gesture
+      const ok = await startARSession(async (bitmap: ImageBitmap) => {
+        try {
+          // forward XR frames into PoseDetector
+          await poseRef.current?.processXRBitmap(bitmap);
+        } catch (e) {
+          console.warn('[App] processXRBitmap failed', e);
+        } finally {
+          bitmap.close?.();
+        }
+      });
+      setArEnabled(!!ok);
+    } else {
+      await endARSession();
+      setArEnabled(false);
+    }
+  };
 
   return (
     <div className="App">
-      <header className="App-header">
-        AI Mirror: AR Measurement Prototype
-      </header>
+      <header className="App-header">AI Mirror: AR Measurement Prototype</header>
 
       <div className="controls">
         <button
@@ -25,68 +44,23 @@ function App() {
           Toggle Camera ({facingMode})
         </button>
 
-        <button
-          onClick={async () => {
-            if (!arEnabled) {
-              const ok = await startARSession(); // must be a user gesture
-              if (ok) setArEnabled(true);
-            } else {
-              await endARSession();
-              setArEnabled(false);
-            }
-          }}
-        >
+        <button onClick={handleStartStopAR}>
           {arEnabled ? 'Disable AR' : 'Start AR'}
         </button>
       </div>
 
-      <div className="video-wrapper" style={{ position: 'relative' }}>
+      <div className="video-wrapper">
         <PoseDetector
+          ref={poseRef}
           facingMode={facingMode}
           arEnabled={arEnabled}
-          onMeasurementsUpdate={setMeasurements}
+          onMeasurementsUpdate={(m) => setMeasurements(m)}
         />
+      </div>
 
-        {measurements && (
-          <div
-            style={{
-              position: 'absolute',
-              top: 10,
-              left: 10,
-              background: 'rgba(0,0,0,0.6)',
-              color: '#fff',
-              padding: 10,
-              borderRadius: 8,
-              fontSize: 14,
-              lineHeight: 1.35,
-              zIndex: 10,
-              minWidth: 220,
-            }}
-          >
-            <div style={{ opacity: 0.8, marginBottom: 4 }}>Measurements (FOV estimate)</div>
-            <div>
-              <strong>Shoulder</strong> — {measurements.shoulder ? (
-                <>
-                  {measurements.shoulder.px.toFixed(0)} px | {measurements.shoulder.cm.toFixed(1)} cm | {measurements.shoulder.inch.toFixed(2)} in
-                </>
-              ) : '—'}
-            </div>
-            <div>
-              <strong>Torso</strong> — {measurements.torso ? (
-                <>
-                  {measurements.torso.px.toFixed(0)} px | {measurements.torso.cm.toFixed(1)} cm | {measurements.torso.inch.toFixed(2)} in
-                </>
-              ) : '—'}
-            </div>
-            <div>
-              <strong>Height</strong> — {measurements.height ? (
-                <>
-                  {measurements.height.px.toFixed(0)} px | {measurements.height.cm.toFixed(1)} cm | { measurements.height.inch.toFixed(2)} in
-                </>
-              ) : '—'}
-            </div>
-          </div>
-        )}
+      <div style={{ marginTop: 12, color: '#fff' }}>
+        <strong>Last measurements:</strong>
+        <pre style={{ color: '#0f0' }}>{JSON.stringify(measurements, null, 2)}</pre>
       </div>
     </div>
   );
